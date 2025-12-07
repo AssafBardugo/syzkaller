@@ -370,11 +370,6 @@ static int netlink_next_msg(struct nlmsg* nlmsg, unsigned int offset,
 #endif
 
 #if SYZ_EXECUTOR || SYZ_NET_DEVICES || SYZ_802154
-
-// Force few TX and RX queues per interface to avoid creating 2 sysfs entries
-// per CPU per interface which takes a long time on machines with many cores.
-static unsigned int queue_count = 2;
-
 static void netlink_add_device_impl(struct nlmsg* nlmsg, const char* type,
 				    const char* name, bool up)
 {
@@ -385,10 +380,6 @@ static void netlink_add_device_impl(struct nlmsg* nlmsg, const char* type,
 	netlink_init(nlmsg, RTM_NEWLINK, NLM_F_EXCL | NLM_F_CREATE, &hdr, sizeof(hdr));
 	if (name)
 		netlink_attr(nlmsg, IFLA_IFNAME, name, strlen(name));
-
-	netlink_attr(nlmsg, IFLA_NUM_TX_QUEUES, &queue_count, sizeof(queue_count));
-	netlink_attr(nlmsg, IFLA_NUM_RX_QUEUES, &queue_count, sizeof(queue_count));
-
 	netlink_nest(nlmsg, IFLA_LINKINFO);
 	netlink_attr(nlmsg, IFLA_INFO_KIND, type, strlen(type));
 }
@@ -414,8 +405,6 @@ static void netlink_add_veth(struct nlmsg* nlmsg, int sock, const char* name,
 	netlink_nest(nlmsg, VETH_INFO_PEER);
 	nlmsg->pos += sizeof(struct ifinfomsg);
 	netlink_attr(nlmsg, IFLA_IFNAME, peer, strlen(peer));
-	netlink_attr(nlmsg, IFLA_NUM_TX_QUEUES, &queue_count, sizeof(queue_count));
-	netlink_attr(nlmsg, IFLA_NUM_RX_QUEUES, &queue_count, sizeof(queue_count));
 	netlink_done(nlmsg);
 	netlink_done(nlmsg);
 	netlink_done(nlmsg);
@@ -2433,7 +2422,7 @@ static long syz_open_dev(volatile long a0, volatile long a1, volatile long a2)
 			*hash = '0' + (char)(nb % 10); // 10 devices should be enough for everyone.
 			nb /= 10;
 		}
-		return open(buf, a2 & ~O_CREAT, 0);
+		return open(buf, a2, 0);
 	}
 }
 #endif
@@ -3198,7 +3187,7 @@ error_clear_loop:
 }
 #endif
 
-#if SYZ_EXECUTOR || __NR_syz_kvm_setup_cpu || __NR_syz_kvm_vgic_v3_setup || __NR_syz_kvm_setup_syzos_vm || __NR_syz_kvm_add_vcpu || __NR_syz_kvm_assert_syzos_uexit || __NR_syz_kvm_assert_reg || __NR_syz_kvm_assert_syzos_kvm_exit
+#if SYZ_EXECUTOR || __NR_syz_kvm_setup_cpu || __NR_syz_kvm_vgic_v3_setup || __NR_syz_kvm_setup_syzos_vm || __NR_syz_kvm_add_vcpu || __NR_syz_kvm_assert_syzos_uexit || __NR_syz_kvm_assert_reg
 // KVM is not yet supported on RISC-V
 #if !GOARCH_riscv64 && !GOARCH_arm
 #include <errno.h>
@@ -5860,60 +5849,6 @@ static long syz_pidfd_open(volatile long pid, volatile long flags)
 		pid = 0;
 	}
 	return syscall(__NR_pidfd_open, pid, flags);
-}
-
-#endif
-
-#if SYZ_EXECUTOR || __NR_syz_kfuzztest_run
-
-#include <fcntl.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-static long syz_kfuzztest_run(volatile long test_name_ptr, volatile long input_data,
-			      volatile long input_data_size, volatile long buffer)
-{
-	const char* test_name = (const char*)test_name_ptr;
-	if (!test_name) {
-		debug("syz_kfuzztest_run: test name was NULL\n");
-		return -1;
-	}
-	if (!buffer) {
-		debug("syz_kfuzztest_run: buffer was NULL\n");
-		return -1;
-	}
-
-	char buf[256];
-	int ret = snprintf(buf, sizeof(buf), "/sys/kernel/debug/kfuzztest/%s/input", test_name);
-	if (ret < 0 || (unsigned long)ret >= sizeof(buf)) {
-		debug("syz_kfuzztest_run: constructed path is too long or snprintf failed\n");
-		return -1;
-	}
-
-	int fd = openat(AT_FDCWD, buf, O_WRONLY, 0);
-	if (fd < 0) {
-		debug("syz_kfuzztest_run: failed to open %s\n", buf);
-		return -1;
-	}
-
-	ssize_t bytes_written = write(fd, (void*)buffer, (size_t)input_data_size);
-	if (bytes_written != input_data_size) {
-		debug("syz_kfuzztest_run: failed to write to %s, reason: %s\n", buf, strerror(errno));
-		close(fd);
-		return -1;
-	}
-
-	if (close(fd) != 0) {
-		debug("syz_kfuzztest_run: failed to close file\n");
-		return -1;
-	}
-
-	return 0;
 }
 
 #endif

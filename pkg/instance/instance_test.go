@@ -36,7 +36,6 @@ func TestExecprogCmd(t *testing.T) {
 	flagSignal := flags.Bool("cover", false, "collect feedback signals (coverage)")
 	flagSandbox := flags.String("sandbox", "none", "sandbox for fuzzing (none/setuid/namespace/android)")
 	flagSlowdown := flags.Int("slowdown", 1, "")
-	flagSandboxArg := flags.Int("sandbox_arg", 0, "argument for sandbox runner to adjust it via config")
 	cmdLine := ExecprogCmd(os.Args[0], "/myexecutor", targets.FreeBSD, targets.I386, "vmtype",
 		csource.Options{
 			Sandbox:    "namespace",
@@ -81,9 +80,6 @@ func TestExecprogCmd(t *testing.T) {
 	}
 	if *flagSandbox != "namespace" {
 		t.Errorf("bad sandbox: %q, want: %q", *flagSandbox, "namespace")
-	}
-	if *flagSandboxArg != 3 {
-		t.Errorf("bad sandbox_arg: %q, want: %q", *flagSandboxArg, 3)
 	}
 	if *flagSignal {
 		t.Errorf("bad signal: %v, want: %v", *flagSignal, false)

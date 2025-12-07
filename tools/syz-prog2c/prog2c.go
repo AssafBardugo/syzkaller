@@ -11,7 +11,6 @@ import (
 	"runtime"
 
 	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/pkg/kfuzztest"
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
 )
@@ -34,7 +33,6 @@ var (
 	flagLeak       = flag.Bool("leak", false, "do leak checking")
 	flagEnable     = flag.String("enable", "none", "enable only listed additional features")
 	flagDisable    = flag.String("disable", "none", "enable all additional features except listed")
-	flagVmlinux    = flag.String("vmlinux", "", "path to vmlinux binary (required for dynamically discovered calls")
 )
 
 func main() {
@@ -55,13 +53,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
-	}
-	if *flagVmlinux != "" {
-		_, err = kfuzztest.ActivateKFuzzTargets(target, *flagVmlinux)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			os.Exit(1)
-		}
 	}
 	data, err := os.ReadFile(*flagProg)
 	if err != nil {

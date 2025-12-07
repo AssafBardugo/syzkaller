@@ -12,22 +12,18 @@ config:
  - TIPC_DIAG
 
  - IP_SCTP
- # See "sctp: Convert cookie authentication to use HMAC-SHA256".
- - SCTP_COOKIE_HMAC_SHA1: [-v6.18]
- - SCTP_DEFAULT_COOKIE_HMAC_SHA256: [v6.18]
+ - SCTP_COOKIE_HMAC_SHA1
  - NF_CT_PROTO_SCTP
  - NETFILTER_XT_MATCH_SCTP
 
  # These were deprecated in v6.16.
  - IP_DCCP: [-v6.16]
  - IP_DCCP_CCID3: [-v6.16]
- # Removed by "netfilter: conntrack: remove DCCP protocol support"
- - NF_CT_PROTO_DCCP: [-v6.17]
+ - NF_CT_PROTO_DCCP
  - NETFILTER_XT_MATCH_DCCP
 
  - BATMAN_ADV
- # Removed by "batman-adv: remove network coding support".
- - BATMAN_ADV_NC: [-v6.18]
+ - BATMAN_ADV_NC
  - BATMAN_ADV_SYSFS: [-v5.11]
  - BATMAN_ADV_BATMAN_V
  - BATMAN_ADV_BLA
@@ -60,11 +56,9 @@ config:
  - NF_LOG_BRIDGE: [-v5.13]
  - NF_CONNTRACK_BRIDGE
  - BRIDGE_NF_EBTABLES
- # Required since "netfilter: Exclude LEGACY TABLES on PREEMPT_RT".
- - BRIDGE_NF_EBTABLES_LEGACY: [v6.17, -preempt_rt]
- - BRIDGE_EBT_BROUTE: [-preempt_rt]
- - BRIDGE_EBT_T_FILTER: [-preempt_rt]
- - BRIDGE_EBT_T_NAT: [-preempt_rt]
+ - BRIDGE_EBT_BROUTE
+ - BRIDGE_EBT_T_FILTER
+ - BRIDGE_EBT_T_NAT
  - BRIDGE_EBT_802_3
  - BRIDGE_EBT_AMONG
  - BRIDGE_EBT_ARP

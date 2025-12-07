@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/dashboard/dashapi"
+	"github.com/google/syzkaller/pkg/email"
 	"github.com/google/syzkaller/pkg/email/lore"
 	"github.com/google/syzkaller/pkg/hash"
 	"github.com/google/syzkaller/pkg/osutil"
@@ -124,7 +125,7 @@ func processArchives(paths, emails, domains []string) []*lore.Thread {
 	}
 
 	// Set up some worker threads.
-	var repoEmails []*lore.Email
+	var repoEmails []*email.Email
 	var mu sync.Mutex
 	var skipped atomic.Int64
 	for i := 0; i < threads; i++ {

@@ -16,22 +16,20 @@ import (
 )
 
 type APIServer struct {
-	seriesService      *service.SeriesService
-	sessionService     *service.SessionService
-	buildService       *service.BuildService
-	testService        *service.SessionTestService
-	findingService     *service.FindingService
-	baseFindingService *service.BaseFindingService
+	seriesService  *service.SeriesService
+	sessionService *service.SessionService
+	buildService   *service.BuildService
+	testService    *service.SessionTestService
+	findingService *service.FindingService
 }
 
 func NewAPIServer(env *app.AppEnvironment) *APIServer {
 	return &APIServer{
-		seriesService:      service.NewSeriesService(env),
-		sessionService:     service.NewSessionService(env),
-		buildService:       service.NewBuildService(env),
-		testService:        service.NewSessionTestService(env),
-		findingService:     service.NewFindingService(env),
-		baseFindingService: service.NewBaseFindingService(env),
+		seriesService:  service.NewSeriesService(env),
+		sessionService: service.NewSessionService(env),
+		buildService:   service.NewBuildService(env),
+		testService:    service.NewSessionTestService(env),
+		findingService: service.NewFindingService(env),
 	}
 }
 
@@ -48,8 +46,6 @@ func (c APIServer) Mux() *http.ServeMux {
 	mux.HandleFunc("/tests/upload_artifacts", c.uploadTestArtifact)
 	mux.HandleFunc("/tests/upload", c.uploadTest)
 	mux.HandleFunc("/trees", c.getTrees)
-	mux.HandleFunc("/base_findings/upload", c.uploadBaseFinding)
-	mux.HandleFunc("/base_findings/status", c.baseFindingStatus)
 	return mux
 }
 
@@ -207,35 +203,6 @@ func (c APIServer) uploadSession(w http.ResponseWriter, r *http.Request) {
 func (c APIServer) getTrees(w http.ResponseWriter, r *http.Request) {
 	api.ReplyJSON(w, &api.TreesResp{
 		Trees:       api.DefaultTrees,
-		FuzzTargets: api.FuzzTargets,
+		FuzzConfigs: api.FuzzConfigs,
 	})
-}
-
-func (c APIServer) uploadBaseFinding(w http.ResponseWriter, r *http.Request) {
-	req := api.ParseJSON[api.BaseFindingInfo](w, r)
-	if req == nil {
-		return
-	}
-	err := c.baseFindingService.Upload(r.Context(), req)
-	if errors.Is(err, service.ErrBuildNotFound) {
-		http.Error(w, fmt.Sprint(err), http.StatusNotFound)
-		return
-	} else if err != nil {
-		http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
-		return
-	}
-	api.ReplyJSON[interface{}](w, nil)
-}
-
-func (c APIServer) baseFindingStatus(w http.ResponseWriter, r *http.Request) {
-	req := api.ParseJSON[api.BaseFindingInfo](w, r)
-	if req == nil {
-		return
-	}
-	resp, err := c.baseFindingService.Status(r.Context(), req)
-	if err != nil {
-		http.Error(w, fmt.Sprint(err), http.StatusInternalServerError)
-		return
-	}
-	api.ReplyJSON[*api.BaseFindingStatus](w, resp)
 }

@@ -31,8 +31,6 @@
 #  include <stdio.h>
 #endif  // FLATBUFFERS_PREFER_PRINTF
 
-#include <cmath>
-#include <limits>
 #include <string>
 
 namespace flatbuffers {
@@ -257,7 +255,7 @@ inline void strtoval_impl(double *val, const char *str, char **endptr) {
 }
 
 // UBSAN: double to float is safe if numeric_limits<float>::is_iec559 is true.
-FLATBUFFERS_SUPPRESS_UBSAN("float-cast-overflow")
+__suppress_ubsan__("float-cast-overflow")
 inline void strtoval_impl(float *val, const char *str, char **endptr) {
   *val = __strtof_impl(str, endptr);
 }
@@ -314,7 +312,6 @@ inline bool StringToFloatImpl(T *val, const char *const str) {
   strtoval_impl(val, str, const_cast<char **>(&end));
   auto done = (end != str) && (*end == '\0');
   if (!done) *val = 0;  // erase partial result
-  if (done && std::isnan(*val)) { *val = std::numeric_limits<T>::quiet_NaN(); }
   return done;
 }
 
@@ -393,18 +390,6 @@ inline int64_t StringToInt(const char *s, int base = 10) {
 inline uint64_t StringToUInt(const char *s, int base = 10) {
   uint64_t val;
   return StringToIntegerImpl(&val, s, base) ? val : 0;
-}
-
-inline bool StringIsFlatbufferNan(const std::string &s) {
-  return s == "nan" || s == "+nan" || s == "-nan";
-}
-
-inline bool StringIsFlatbufferPositiveInfinity(const std::string &s) {
-  return s == "inf" || s == "+inf" || s == "infinity" || s == "+infinity";
-}
-
-inline bool StringIsFlatbufferNegativeInfinity(const std::string &s) {
-  return s == "-inf" || s == "-infinity";
 }
 
 typedef bool (*LoadFileFunction)(const char *filename, bool binary,
@@ -623,7 +608,7 @@ inline bool EscapeString(const char *s, size_t length, std::string *_text,
               // we previously checked for non-UTF-8, so we shouldn't reach
               // here.
               //
-              // 2) We reached here by someone calling GenText()
+              // 2) We reached here by someone calling GenerateText()
               // on a previously-serialized flatbuffer. The data might have
               // non-UTF-8 Strings, or might be corrupt.
               //
@@ -700,6 +685,9 @@ bool SetGlobalTestLocale(const char *locale_name,
 bool ReadEnvironmentVariable(const char *var_name,
                              std::string *_value = nullptr);
 
+// MSVC specific: Send all assert reports to STDOUT to prevent CI hangs.
+void SetupDefaultCRTReportMode();
+
 enum class Case {
   kUnknown = 0,
   // TheQuickBrownFox
@@ -722,10 +710,9 @@ enum class Case {
   kSnake2 = 9,
 };
 
-// Convert the `input` string of case `input_case` to the specified
-// `output_case`.
+// Convert the `input` string of case `input_case` to the specified `output_case`.
 std::string ConvertCase(const std::string &input, Case output_case,
-                        Case input_case = Case::kSnake);
+                    Case input_case = Case::kSnake);
 
 }  // namespace flatbuffers
 

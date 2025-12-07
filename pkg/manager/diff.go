@@ -40,7 +40,6 @@ import (
 type DiffFuzzerConfig struct {
 	Debug        bool
 	PatchedOnly  chan *UniqueBug
-	BaseCrashes  chan string
 	Store        *DiffFuzzerStore
 	ArtifactsDir string // Where to store the artifacts that supplement the logs.
 	// The fuzzer waits no more than MaxTriageTime time until it starts taking VMs away
@@ -52,11 +51,6 @@ type DiffFuzzerConfig struct {
 	// trying to reach the modified code. The time is counted since the moment
 	// 99% of the corpus is triaged.
 	FuzzToReachPatched time.Duration
-	// The callback may be used to consult external systems on whether
-	// the crash should be ignored. E.g. because it doesn't match the filter or
-	// the particular base kernel has already been seen to crash with the given title.
-	// It helps reduce the number of unnecessary reproductions.
-	IgnoreCrash func(context.Context, string) (bool, error)
 }
 
 func (cfg *DiffFuzzerConfig) TriageDeadline() <-chan time.Time {
@@ -192,41 +186,40 @@ loop:
 			log.Logf(0, "STAT %s", data)
 		case rep := <-dc.base.crashes:
 			log.Logf(1, "base crash: %v", rep.Title)
-			dc.reportBaseCrash(ctx, rep)
+			dc.store.BaseCrashed(rep.Title, rep.Report)
 		case ret := <-runner.done:
 			// We have run the reproducer on the base instance.
 
 			// A sanity check: the base kernel might have crashed with the same title
 			// since the moment we have stared the reproduction / running on the repro base.
-			ignored := dc.ignoreCrash(ctx, ret.reproReport.Title)
-			if ret.crashReport == nil && ignored {
+			crashesOnBase := dc.store.EverCrashedBase(ret.origReport.Title)
+			if ret.crashReport == nil && crashesOnBase {
 				// Report it as error so that we could at least find it in the logs.
-				log.Errorf("resulting crash of an approved repro result is to be ignored: %s",
-					ret.reproReport.Title)
+				log.Errorf("repro didn't crash base, but base itself crashed: %s", ret.origReport.Title)
 			} else if ret.crashReport == nil {
-				dc.store.BaseNotCrashed(ret.reproReport.Title)
+				dc.store.BaseNotCrashed(ret.origReport.Title)
 				select {
 				case <-ctx.Done():
 				case dc.patchedOnly <- &UniqueBug{
-					Report: ret.reproReport,
+					Report: ret.origReport,
 					Repro:  ret.repro,
 				}:
 				}
-				log.Logf(0, "patched-only: %s", ret.reproReport.Title)
+				log.Logf(0, "patched-only: %s", ret.origReport.Title)
 				// Now that we know this bug only affects the patch kernel, we can spend more time
 				// generating a minimalistic repro and a C repro.
 				if !ret.fullRepro {
 					reproLoop.Enqueue(&Crash{
 						Report: &report.Report{
-							Title:  ret.reproReport.Title,
+							Title:  ret.origReport.Title,
 							Output: ret.repro.Prog.Serialize(),
 						},
 						FullRepro: true,
 					})
 				}
 			} else {
-				dc.reportBaseCrash(ctx, ret.crashReport)
-				log.Logf(0, "crashes both: %s / %s", ret.reproReport.Title, ret.crashReport.Title)
+				dc.store.BaseCrashed(ret.origReport.Title, ret.origReport.Report)
+				log.Logf(0, "crashes both: %s / %s", ret.origReport.Title, ret.crashReport.Title)
 			}
 		case ret := <-dc.doneRepro:
 			// We have finished reproducing a crash from the patched instance.
@@ -259,36 +252,6 @@ loop:
 		}
 	}
 	return g.Wait()
-}
-
-func (dc *diffContext) ignoreCrash(ctx context.Context, title string) bool {
-	if dc.store.EverCrashedBase(title) {
-		return true
-	}
-	// Let's try to ask the external systems about it as well.
-	if dc.cfg.IgnoreCrash != nil {
-		ignore, err := dc.cfg.IgnoreCrash(ctx, title)
-		if err != nil {
-			log.Logf(0, "a call to IgnoreCrash failed: %v", err)
-		} else {
-			if ignore {
-				log.Logf(0, "base crash %q is to be ignored", title)
-			}
-			return ignore
-		}
-	}
-	return false
-}
-
-func (dc *diffContext) reportBaseCrash(ctx context.Context, rep *report.Report) {
-	dc.store.BaseCrashed(rep.Title, rep.Report)
-	if dc.cfg.BaseCrashes == nil {
-		return
-	}
-	select {
-	case dc.cfg.BaseCrashes <- rep.Title:
-	case <-ctx.Done():
-	}
 }
 
 func (dc *diffContext) waitCorpusTriage(ctx context.Context, threshold float64) chan struct{} {
@@ -378,14 +341,15 @@ func (dc *diffContext) NeedRepro(crash *Crash) bool {
 	if !needReproForTitle(crash.Title) {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if dc.ignoreCrash(ctx, crash.Title) {
-		return false
-	}
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
-	return dc.reproAttempts[crash.Title] <= maxReproAttempts
+	if dc.store.EverCrashedBase(crash.Title) {
+		return false
+	}
+	if dc.reproAttempts[crash.Title] > maxReproAttempts {
+		return false
+	}
+	return true
 }
 
 func (dc *diffContext) RunRepro(ctx context.Context, crash *Crash) *ReproResult {
@@ -486,7 +450,7 @@ func setup(name string, cfg *mgrconfig.Config, debug bool) (*kernelContext, erro
 }
 
 func (kc *kernelContext) Loop(baseCtx context.Context) error {
-	defer log.Logf(1, "%s: kernel context loop terminated", kc.name)
+	defer log.Logf(1, "syz-diff (%s): kernel context loop terminated", kc.name)
 
 	if err := kc.serv.Listen(); err != nil {
 		return fmt.Errorf("failed to start rpc server: %w", err)
@@ -494,11 +458,9 @@ func (kc *kernelContext) Loop(baseCtx context.Context) error {
 	eg, ctx := errgroup.WithContext(baseCtx)
 	kc.ctx = ctx
 	eg.Go(func() error {
-		defer log.Logf(1, "%s: rpc server terminaled", kc.name)
 		return kc.serv.Serve(ctx)
 	})
 	eg.Go(func() error {
-		defer log.Logf(1, "%s: pool terminated", kc.name)
 		kc.pool.Loop(ctx)
 		return nil
 	})
@@ -674,7 +636,7 @@ func (kc *kernelContext) runInstance(ctx context.Context, inst *vm.Instance,
 	cmd := fmt.Sprintf("%v runner %v %v %v", executorBin, inst.Index(), host, port)
 	ctxTimeout, cancel := context.WithTimeout(ctx, kc.cfg.Timeouts.VMRunningTime)
 	defer cancel()
-	_, reps, err := inst.Run(ctxTimeout, kc.reporter, cmd,
+	_, rep, err := inst.Run(ctxTimeout, kc.reporter, cmd,
 		vm.WithExitCondition(vm.ExitTimeout),
 		vm.WithInjectExecuting(injectExec),
 		vm.WithEarlyFinishCb(func() {
@@ -684,10 +646,7 @@ func (kc *kernelContext) runInstance(ctx context.Context, inst *vm.Instance,
 			kc.serv.StopFuzzing(inst.Index())
 		}),
 	)
-	if len(reps) > 0 {
-		return reps[0], err
-	}
-	return nil, err
+	return rep, err
 }
 
 func (kc *kernelContext) triageProgress() float64 {
@@ -719,7 +678,7 @@ type reproRunner struct {
 }
 
 type reproRunnerResult struct {
-	reproReport *report.Report
+	origReport  *report.Report
 	crashReport *report.Report
 	repro       *repro.Result
 	fullRepro   bool // whether this was a full reproduction
@@ -757,7 +716,7 @@ func (rr *reproRunner) Run(ctx context.Context, r *repro.Result, fullRepro bool)
 		rr.kernel.pool.ReserveForRun(min(cnt, pool.Total()))
 	}()
 
-	ret := reproRunnerResult{reproReport: r.Report, repro: r, fullRepro: fullRepro}
+	ret := reproRunnerResult{origReport: r.Report, repro: r, fullRepro: fullRepro}
 	for doneRuns := 0; doneRuns < needRuns; {
 		if ctx.Err() != nil {
 			return
@@ -783,7 +742,7 @@ func (rr *reproRunner) Run(ctx context.Context, r *repro.Result, fullRepro bool)
 				Opts:     opts,
 			})
 		})
-		logPrefix := fmt.Sprintf("attempt #%d to run %q on base", doneRuns, ret.reproReport.Title)
+		logPrefix := fmt.Sprintf("attempt #%d to run %q on base", doneRuns, ret.origReport.Title)
 		if errors.Is(runErr, context.Canceled) {
 			// Just exit without sending anything over the channel.
 			log.Logf(1, "%s: aborting due to context cancelation", logPrefix)

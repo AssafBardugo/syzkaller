@@ -130,9 +130,19 @@ var (
 
 func SetTargets(cfg *Config) error {
 	var err error
-	cfg.TargetOS, cfg.TargetVMArch, cfg.TargetArch, cfg.Target, cfg.SysTarget,
-		err = SplitTarget(cfg.RawTarget)
-	return err
+	cfg.TargetOS, cfg.TargetVMArch, cfg.TargetArch, err = splitTarget(cfg.RawTarget)
+	if err != nil {
+		return err
+	}
+	cfg.Target, err = prog.GetTarget(cfg.TargetOS, cfg.TargetArch)
+	if err != nil {
+		return err
+	}
+	cfg.SysTarget = targets.Get(cfg.TargetOS, cfg.TargetVMArch)
+	if cfg.SysTarget == nil {
+		return fmt.Errorf("unsupported OS/arch: %v/%v", cfg.TargetOS, cfg.TargetVMArch)
+	}
+	return nil
 }
 
 func Complete(cfg *Config) error {
@@ -199,11 +209,6 @@ func Complete(cfg *Config) error {
 	}
 	cfg.initTimeouts()
 	cfg.VMLess = cfg.Type == "none"
-
-	if cfg.VMLess && cfg.Reproduce {
-		return fmt.Errorf("if config param type is none, reproduce must be false")
-	}
-
 	return nil
 }
 
@@ -392,29 +397,21 @@ func (cfg *Config) completeFocusAreas() error {
 	return nil
 }
 
-func SplitTarget(str string) (os, vmarch, arch string, target *prog.Target, sysTarget *targets.Target, err error) {
-	if str == "" {
-		err = fmt.Errorf("target is empty")
-		return
+func splitTarget(target string) (string, string, string, error) {
+	if target == "" {
+		return "", "", "", fmt.Errorf("target is empty")
 	}
-	targetParts := strings.Split(str, "/")
+	targetParts := strings.Split(target, "/")
 	if len(targetParts) != 2 && len(targetParts) != 3 {
-		err = fmt.Errorf("bad config param target")
-		return
+		return "", "", "", fmt.Errorf("bad config param target")
 	}
-	os = targetParts[0]
-	vmarch = targetParts[1]
-	arch = targetParts[1]
+	os := targetParts[0]
+	vmarch := targetParts[1]
+	arch := targetParts[1]
 	if len(targetParts) == 3 {
 		arch = targetParts[2]
 	}
-	sysTarget = targets.Get(os, vmarch)
-	if sysTarget == nil {
-		err = fmt.Errorf("unsupported OS/arch: %v/%v", os, vmarch)
-		return
-	}
-	target, err = prog.GetTarget(os, arch)
-	return
+	return os, vmarch, arch, nil
 }
 
 func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string,

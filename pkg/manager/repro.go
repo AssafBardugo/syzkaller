@@ -31,7 +31,6 @@ type Crash struct {
 	Manual        bool
 	FullRepro     bool // used by the diff fuzzer to do a full scale reproduction
 	*report.Report
-	TailReports []*report.Report
 }
 
 func (c *Crash) FullTitle() string {
@@ -184,8 +183,6 @@ func (r *ReproLoop) popCrash() *Crash {
 }
 
 func (r *ReproLoop) Loop(ctx context.Context) {
-	defer log.Logf(1, "repro loop terminated")
-
 	count := 0
 	for ; r.calculateReproVMs(count+1) <= r.reproVMs; count++ {
 		r.parallel <- struct{}{}

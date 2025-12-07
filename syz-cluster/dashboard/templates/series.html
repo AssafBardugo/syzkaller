@@ -71,7 +71,7 @@
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Content <a href="/series/{{.ID}}/all_patches">[All]</a></th>
+                    <th>Content</th>
                 </tr>
             </thead>
             <tbody>
@@ -148,7 +148,6 @@
                       {{range .Findings}}
                       <tr>
                         <td>
-                          {{if not .InvalidatedAt.IsNull}}<b>[invalidated]</b>{{end}}
                           {{if .ReportURI}}
                             <a href="/findings/{{.ID}}/report" class="modal-link-raw">{{.Title}}</a>
                           {{else}}

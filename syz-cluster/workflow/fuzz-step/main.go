@@ -14,11 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 
-	"github.com/google/syzkaller/pkg/build"
-	"github.com/google/syzkaller/pkg/db"
+	"github.com/google/syzkaller/pkg/config"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/manager"
 	"github.com/google/syzkaller/pkg/mgrconfig"
@@ -26,18 +24,21 @@ import (
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/syz-cluster/pkg/api"
 	"github.com/google/syzkaller/syz-cluster/pkg/app"
-	"github.com/google/syzkaller/syz-cluster/pkg/fuzzconfig"
 	"golang.org/x/sync/errgroup"
 )
 
 var (
-	flagConfig       = flag.String("config", "", "path to the fuzz config")
-	flagSession      = flag.String("session", "", "session ID")
-	flagBaseBuild    = flag.String("base_build", "", "base build ID")
-	flagPatchedBuild = flag.String("patched_build", "", "patched build ID")
-	flagTime         = flag.String("time", "1h", "how long to fuzz")
-	flagWorkdir      = flag.String("workdir", "/workdir", "base workdir path")
+	flagConfig         = flag.String("config", "", "syzkaller config")
+	flagSession        = flag.String("session", "", "session ID")
+	flagBaseBuild      = flag.String("base_build", "", "base build ID")
+	flagPatchedBuild   = flag.String("patched_build", "", "patched build ID")
+	flagTime           = flag.String("time", "1h", "how long to fuzz")
+	flagWorkdir        = flag.String("workdir", "/workdir", "base workdir path")
+	flagCorpusURL      = flag.String("corpus_url", "", "an URL to download corpus from")
+	flagSkipCoverCheck = flag.Bool("skip_cover_check", false, "don't check whether we reached the patched code")
 )
+
+const testName = "Fuzzing"
 
 func main() {
 	flag.Parse()
@@ -52,10 +53,8 @@ func main() {
 	if !prog.GitRevisionKnown() {
 		log.Fatalf("the binary is built without the git revision information")
 	}
-
-	config := readFuzzConfig()
 	ctx := context.Background()
-	if err := reportStatus(ctx, config, client, api.TestRunning, nil); err != nil {
+	if err := reportStatus(ctx, client, api.TestRunning, nil); err != nil {
 		app.Fatalf("failed to report the test: %v", err)
 	}
 
@@ -67,54 +66,21 @@ func main() {
 	// the final test result back.
 	runCtx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
-	err = run(runCtx, config, client, d, store)
+	err = run(runCtx, client, d, store)
 	status := api.TestPassed // TODO: what about TestFailed?
-	if errors.Is(err, errSkipFuzzing) {
-		status = api.TestSkipped
-	} else if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		app.Errorf("the step failed: %v", err)
 		status = api.TestError
 	}
 	log.Logf(0, "fuzzing is finished")
-	logFinalState(store)
-	if err := reportStatus(ctx, config, client, status, store); err != nil {
+	log.Logf(0, "status at the end:\n%s", store.PlainTextDump())
+	if err := reportStatus(ctx, client, status, store); err != nil {
 		app.Fatalf("failed to update the test: %v", err)
 	}
 }
 
-func readFuzzConfig() *api.FuzzConfig {
-	raw, err := os.ReadFile(*flagConfig)
-	if err != nil {
-		app.Fatalf("failed to read config: %v", err)
-		return nil
-	}
-	var req api.FuzzConfig
-	err = json.Unmarshal(raw, &req)
-	if err != nil {
-		app.Fatalf("failed to unmarshal request: %v, %s", err, raw)
-		return nil
-	}
-	return &req
-}
-
-func logFinalState(store *manager.DiffFuzzerStore) {
-	log.Logf(0, "status at the end:\n%s", store.PlainTextDump())
-
-	// There can be findings that we did not report only because we failed
-	// to come up with a reproducer.
-	// Let's log such cases so that it's easier to find and manually review them.
-	const countCutOff = 10
-	for _, bug := range store.List() {
-		if bug.Base.Crashes == 0 && bug.Patched.Crashes >= countCutOff {
-			log.Logf(0, "possibly patched-only: %s", bug.Title)
-		}
-	}
-}
-
-var errSkipFuzzing = errors.New("skip")
-
-func run(baseCtx context.Context, config *api.FuzzConfig, client *api.Client,
-	timeout time.Duration, store *manager.DiffFuzzerStore) error {
+func run(baseCtx context.Context, client *api.Client, timeout time.Duration,
+	store *manager.DiffFuzzerStore) error {
 	series, err := client.GetSessionSeries(baseCtx, *flagSession)
 	if err != nil {
 		return fmt.Errorf("failed to query the series info: %w", err)
@@ -125,7 +91,7 @@ func run(baseCtx context.Context, config *api.FuzzConfig, client *api.Client,
 	const MB = 1000000
 	log.EnableLogCaching(100000, 10*MB)
 
-	base, patched, err := generateConfigs(config)
+	base, patched, err := loadConfigs("/configs", *flagConfig, true)
 	if err != nil {
 		return fmt.Errorf("failed to load configs: %w", err)
 	}
@@ -134,70 +100,46 @@ func run(baseCtx context.Context, config *api.FuzzConfig, client *api.Client,
 	if err != nil {
 		app.Errorf("failed to read symbol hashes: %v", err)
 	}
+	manager.PatchFocusAreas(patched, series.PatchBodies(), baseSymbols, patchedSymbols)
 
-	if shouldSkipFuzzing(baseSymbols, patchedSymbols) {
-		return errSkipFuzzing
-	}
-	manager.PatchFocusAreas(patched, series.PatchBodies(), baseSymbols.Text, patchedSymbols.Text)
-
-	if len(config.CorpusURLs) > 0 {
-		err := prepareCorpus(baseCtx, patched.Workdir, config.CorpusURLs, patched.Target)
+	if *flagCorpusURL != "" {
+		err := downloadCorpus(baseCtx, patched.Workdir, *flagCorpusURL)
 		if err != nil {
-			app.Errorf("failed to download the corpus: %v", err)
+			return fmt.Errorf("failed to download the corpus: %w", err)
+		} else {
+			log.Logf(0, "downloaded the corpus from %s", *flagCorpusURL)
 		}
 	}
 
 	eg, ctx := errgroup.WithContext(baseCtx)
 	bugs := make(chan *manager.UniqueBug)
-	baseCrashes := make(chan string, 16)
 	eg.Go(func() error {
 		defer log.Logf(0, "bug reporting terminated")
 		for {
+			var bug *manager.UniqueBug
 			select {
-			case title := <-baseCrashes:
-				err := client.UploadBaseFinding(ctx, &api.BaseFindingInfo{
-					BuildID: *flagBaseBuild,
-					Title:   title,
-				})
-				if err != nil {
-					app.Errorf("failed to report a base kernel crash %q: %v", title, err)
-				}
-			case bug := <-bugs:
-				err := reportFinding(ctx, config, client, bug)
-				if err != nil {
-					app.Errorf("failed to report a finding %q: %v", bug.Report.Title, err)
-				}
+			case bug = <-bugs:
 			case <-ctx.Done():
-				return nil
+			}
+			if bug == nil {
+				break
+			}
+			// TODO: filter out all INFO: bugs?
+			err := reportFinding(ctx, client, bug)
+			if err != nil {
+				app.Errorf("failed to report a finding %s: %v", bug.Report.Title, err)
 			}
 		}
+		return nil
 	})
 	eg.Go(func() error {
 		defer log.Logf(0, "diff fuzzing terminated")
 		return manager.RunDiffFuzzer(ctx, base, patched, manager.DiffFuzzerConfig{
 			Debug:              false,
 			PatchedOnly:        bugs,
-			BaseCrashes:        baseCrashes,
 			Store:              store,
 			MaxTriageTime:      timeout / 2,
-			FuzzToReachPatched: fuzzToReachPatched(config),
-			IgnoreCrash: func(ctx context.Context, title string) (bool, error) {
-				if !titleMatchesFilter(config, title) {
-					log.Logf(1, "crash %q doesn't match the filter", title)
-					return true, nil
-				}
-				ret, err := client.BaseFindingStatus(ctx, &api.BaseFindingInfo{
-					BuildID: *flagBaseBuild,
-					Title:   title,
-				})
-				if err != nil {
-					return false, err
-				}
-				if ret.Observed {
-					log.Logf(1, "crash %q is already known", title)
-				}
-				return ret.Observed, nil
-			},
+			FuzzToReachPatched: fuzzToReachPatched(),
 		})
 	})
 	const (
@@ -218,7 +160,7 @@ func run(baseCtx context.Context, config *api.FuzzConfig, client *api.Client,
 				lastArtifactUpdate = time.Now()
 				useStore = store
 			}
-			err := reportStatus(ctx, config, client, api.TestRunning, useStore)
+			err := reportStatus(ctx, client, api.TestRunning, useStore)
 			if err != nil {
 				app.Errorf("failed to update status: %v", err)
 			}
@@ -232,77 +174,70 @@ func run(baseCtx context.Context, config *api.FuzzConfig, client *api.Client,
 	return err
 }
 
-func prepareCorpus(ctx context.Context, workdir string, urls []string, target *prog.Target) error {
-	corpusFile := filepath.Join(workdir, "corpus.db")
-	var otherFiles []string
-	for i, url := range urls {
-		log.Logf(0, "downloading corpus #%d: %q", i+1, url)
-		downloadTo := corpusFile
-		if i > 0 {
-			downloadTo = fmt.Sprintf("%s.%d", corpusFile, i)
-			otherFiles = append(otherFiles, downloadTo)
-		}
-		out, err := os.Create(corpusFile)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := (&http.Client{}).Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("status is not 200: %s", resp.Status)
-		}
-		_, err = io.Copy(out, resp.Body)
-		if err != nil {
-			return err
-		}
+func downloadCorpus(ctx context.Context, workdir, url string) error {
+	out, err := os.Create(filepath.Join(workdir, "corpus.db"))
+	if err != nil {
+		return err
 	}
-	if len(otherFiles) > 0 {
-		log.Logf(0, "merging corpuses")
-		skipped, err := db.Merge(corpusFile, otherFiles, target)
-		if err != nil {
-			return err
-		} else if len(skipped) > 0 {
-			log.Logf(0, "skipped %d entries", len(skipped))
-		}
+	defer out.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
-	return nil
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status is not 200: %s", resp.Status)
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
 }
 
-func generateConfigs(config *api.FuzzConfig) (*mgrconfig.Config, *mgrconfig.Config, error) {
-	base, err := fuzzconfig.GenerateBase(config)
+// To reduce duplication, patched configs are stored as a delta to their corresponding base.cfg version.
+// loadConfigs performs all the necessary merging and parsing and returns two ready to use configs.
+func loadConfigs(configFolder, configName string, complete bool) (*mgrconfig.Config, *mgrconfig.Config, error) {
+	var baseRaw, deltaRaw json.RawMessage
+	err := config.LoadFile(filepath.Join(configFolder, configName, "base.cfg"), &baseRaw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to prepare base config: %w", err)
+		return nil, nil, fmt.Errorf("failed to read the base config: %w", err)
 	}
-	patched, err := fuzzconfig.GeneratePatched(config)
+	err = config.LoadFile(filepath.Join(configFolder, configName, "patched.cfg"), &deltaRaw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to prepare patched config: %w", err)
+		return nil, nil, fmt.Errorf("failed to read the patched config: %w", err)
 	}
-	base.Workdir = filepath.Join(*flagWorkdir, "base")
-	osutil.MkdirAll(base.Workdir)
-	patched.Workdir = filepath.Join(*flagWorkdir, "patched")
-	osutil.MkdirAll(patched.Workdir)
-	err = mgrconfig.Complete(base)
+	patchedRaw, err := config.MergeJSONs(baseRaw, deltaRaw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to complete the base config: %w", err)
+		return nil, nil, fmt.Errorf("failed to merge the configs: %w", err)
 	}
-	err = mgrconfig.Complete(patched)
+	base, err := mgrconfig.LoadPartialData(baseRaw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to complete the patched config: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse the base config: %w", err)
+	}
+	patched, err := mgrconfig.LoadPartialData(patchedRaw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse the patched config: %w", err)
+	}
+	if complete {
+		base.Workdir = filepath.Join(*flagWorkdir, "base")
+		osutil.MkdirAll(base.Workdir)
+		patched.Workdir = filepath.Join(*flagWorkdir, "patched")
+		osutil.MkdirAll(patched.Workdir)
+		err = mgrconfig.Complete(base)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to complete the base config: %w", err)
+		}
+		err = mgrconfig.Complete(patched)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to complete the patched config: %w", err)
+		}
 	}
 	return base, patched, nil
 }
 
-func reportStatus(ctx context.Context, config *api.FuzzConfig, client *api.Client,
-	status string, store *manager.DiffFuzzerStore) error {
-	testName := getTestName(config)
+func reportStatus(ctx context.Context, client *api.Client, status string, store *manager.DiffFuzzerStore) error {
 	testResult := &api.TestResult{
 		SessionID:      *flagSession,
 		TestName:       testName,
@@ -319,23 +254,20 @@ func reportStatus(ctx context.Context, config *api.FuzzConfig, client *api.Clien
 		return nil
 	}
 	tarGzReader, err := compressArtifacts(store.BasePath)
-	if errors.Is(err, errWriteOverLimit) {
-		app.Errorf("the artifacts archive is too big to upload")
-	} else if err != nil {
+	if err != nil {
 		return fmt.Errorf("failed to compress the artifacts dir: %w", err)
-	} else {
-		err = client.UploadTestArtifacts(ctx, *flagSession, testName, tarGzReader)
-		if err != nil {
-			return fmt.Errorf("failed to upload the status: %w", err)
-		}
+	}
+	err = client.UploadTestArtifacts(ctx, *flagSession, testName, tarGzReader)
+	if err != nil {
+		return fmt.Errorf("failed to upload the status: %w", err)
 	}
 	return nil
 }
 
-func reportFinding(ctx context.Context, config *api.FuzzConfig, client *api.Client, bug *manager.UniqueBug) error {
+func reportFinding(ctx context.Context, client *api.Client, bug *manager.UniqueBug) error {
 	finding := &api.NewFinding{
 		SessionID: *flagSession,
-		TestName:  getTestName(config),
+		TestName:  testName,
 		Title:     bug.Report.Title,
 		Report:    bug.Report.Report,
 		Log:       bug.Report.Output,
@@ -356,87 +288,37 @@ func reportFinding(ctx context.Context, config *api.FuzzConfig, client *api.Clie
 	return client.UploadFinding(ctx, finding)
 }
 
-func getTestName(config *api.FuzzConfig) string {
-	return fmt.Sprintf("[%s] Fuzzing", config.Track)
-}
-
-var ignoreLinuxVariables = map[string]bool{
-	"raw_data": true, // from arch/x86/entry/vdso/vdso-image
-	// Build versions / timestamps.
-	"linux_banner": true,
-	"vermagic":     true,
-	"init_uts_ns":  true,
-}
-
-func shouldSkipFuzzing(base, patched build.SectionHashes) bool {
-	if len(base.Text) == 0 || len(patched.Text) == 0 {
-		// Likely, something went wrong during the kernel build step.
-		log.Logf(0, "skipped the binary equality check because some of them have 0 symbols")
-		return false
-	}
-	same := len(base.Text) == len(patched.Text) && len(base.Data) == len(patched.Data)
-	// For .text, demand all symbols to be equal.
-	for name, hash := range base.Text {
-		if patched.Text[name] != hash {
-			same = false
-			break
-		}
-	}
-	// For data sections ignore some of them.
-	for name, hash := range base.Data {
-		if !ignoreLinuxVariables[name] && patched.Data[name] != hash {
-			log.Logf(1, "symbol %q has different values in base vs patch", name)
-			same = false
-			break
-		}
-	}
-	if same {
-		log.Logf(0, "binaries are the same, no sense to do fuzzing")
-		return true
-	}
-	log.Logf(0, "binaries are different, continuing fuzzing")
-	return false
-}
-
-func titleMatchesFilter(config *api.FuzzConfig, title string) bool {
-	matched, err := regexp.MatchString(config.BugTitleRe, title)
-	if err != nil {
-		app.Fatalf("invalid BugTitleRe regexp: %v", err)
-	}
-	return matched
-}
-
-func readSymbolHashes() (base, patched build.SectionHashes, err error) {
+func readSymbolHashes() (base, patched map[string]string, err error) {
 	// These are saved by the build step.
-	base, err = readSectionHashes("/base/symbol_hashes.json")
+	base, err = readJSONMap("/base/symbol_hashes.json")
 	if err != nil {
-		return build.SectionHashes{}, build.SectionHashes{}, fmt.Errorf("failed to read base hashes: %w", err)
+		return nil, nil, fmt.Errorf("failed to read base hashes: %w", err)
 	}
-	patched, err = readSectionHashes("/patched/symbol_hashes.json")
+	patched, err = readJSONMap("/patched/symbol_hashes.json")
 	if err != nil {
-		return build.SectionHashes{}, build.SectionHashes{}, fmt.Errorf("failed to read patched hashes: %w", err)
+		return nil, nil, fmt.Errorf("failed to read patched hashes: %w", err)
 	}
-	log.Logf(0, "extracted %d text symbol hashes for base and %d for patched", len(base.Text), len(patched.Text))
+	log.Logf(0, "extracted %d symbol hashes for base and %d for patched", len(base), len(patched))
 	return
 }
 
-func readSectionHashes(file string) (build.SectionHashes, error) {
+func readJSONMap(file string) (map[string]string, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return build.SectionHashes{}, err
+		return nil, err
 	}
 	defer f.Close()
 
-	var data build.SectionHashes
+	var data map[string]string
 	err = json.NewDecoder(f).Decode(&data)
 	if err != nil {
-		return build.SectionHashes{}, err
+		return nil, err
 	}
 	return data, nil
 }
 
-func fuzzToReachPatched(config *api.FuzzConfig) time.Duration {
-	if config.SkipCoverCheck {
+func fuzzToReachPatched() time.Duration {
+	if *flagSkipCoverCheck {
 		return 0
 	}
 	// Allow up to 30 minutes after the corpus triage to reach the patched code.

@@ -6,8 +6,8 @@ kind: CronWorkflow
 metadata:
   name: fetch-kernels-cron
 spec:
-  # Three times per day.
-  schedule: "0 */8 * * *"
+  # Twice each day.
+  schedule: "0 */12 * * *"
   concurrencyPolicy: "Replace"
   startingDeadlineSeconds: 0
   workflowSpec:

@@ -566,13 +566,7 @@ func (t *tee) Next() *Request {
 		return nil
 	}
 	t.queue.Submit(&Request{
-		// It makes little sense to copy other fields if these requests
-		// are to be executed in a different environment.
-		Type:        req.Type,
-		ExecOpts:    req.ExecOpts,
-		Prog:        req.Prog.Clone(),
-		BinaryFile:  req.BinaryFile,
-		GlobPattern: req.GlobPattern,
+		Prog: req.Prog.Clone(),
 	})
 	return req
 }

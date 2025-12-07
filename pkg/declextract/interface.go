@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/clangtool"
 	"github.com/google/syzkaller/pkg/cover"
 )
 
@@ -56,7 +55,7 @@ func (ctx *context) noteInterface(iface *Interface) {
 }
 
 func (ctx *context) finishInterfaces() {
-	ctx.interfaces = clangtool.SortAndDedupSlice(ctx.interfaces)
+	ctx.interfaces = sortAndDedupSlice(ctx.interfaces)
 	count := make(map[string]int)
 	for _, iface := range ctx.interfaces {
 		count[iface.Type+iface.Name]++
@@ -78,7 +77,7 @@ func (ctx *context) finishInterfaces() {
 			iface.Access = AccessUnknown
 		}
 	}
-	ctx.interfaces = clangtool.SortAndDedupSlice(ctx.interfaces)
+	ctx.interfaces = sortAndDedupSlice(ctx.interfaces)
 }
 
 func (ctx *context) processFunctions() {

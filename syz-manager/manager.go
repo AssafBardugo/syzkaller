@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -32,7 +31,6 @@ import (
 	"github.com/google/syzkaller/pkg/gce"
 	"github.com/google/syzkaller/pkg/ifaceprobe"
 	"github.com/google/syzkaller/pkg/image"
-	"github.com/google/syzkaller/pkg/kfuzztest"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/manager"
 	"github.com/google/syzkaller/pkg/mgrconfig"
@@ -242,14 +240,6 @@ func main() {
 	if !mode.UseDashboard {
 		cfg.DashboardClient = ""
 		cfg.HubClient = ""
-	}
-	if cfg.Experimental.EnableKFuzzTest {
-		vmLinuxPath := path.Join(cfg.KernelObj, cfg.SysTarget.KernelObject)
-		log.Log(0, "enabling KFuzzTest targets")
-		_, err := kfuzztest.ActivateKFuzzTargets(cfg.Target, vmLinuxPath)
-		if err != nil {
-			log.Fatalf("failed to enable KFuzzTest targets: %v", err)
-		}
 	}
 	RunManager(mode, cfg)
 }
@@ -607,7 +597,7 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 	injectExec := make(chan bool, 10)
 	serv.CreateInstance(inst.Index(), injectExec, updInfo)
 
-	reps, vmInfo, err := mgr.runInstanceInner(ctx, inst,
+	rep, vmInfo, err := mgr.runInstanceInner(ctx, inst,
 		vm.WithExitCondition(vm.ExitTimeout),
 		vm.WithInjectExecuting(injectExec),
 		vm.WithEarlyFinishCb(func() {
@@ -617,10 +607,6 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 			serv.StopFuzzing(inst.Index())
 		}))
 	var extraExecs []report.ExecutorInfo
-	var rep *report.Report
-	if len(reps) != 0 {
-		rep = reps[0]
-	}
 	if rep != nil && rep.Executor != nil {
 		extraExecs = []report.ExecutorInfo{*rep.Executor}
 	}
@@ -636,7 +622,6 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 		mgr.crashes <- &manager.Crash{
 			InstanceIndex: inst.Index(),
 			Report:        rep,
-			TailReports:   reps[1:],
 		}
 	}
 	if err != nil {
@@ -645,7 +630,7 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 }
 
 func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opts ...func(*vm.RunOptions),
-) ([]*report.Report, []byte, error) {
+) (*report.Report, []byte, error) {
 	fwdAddr, err := inst.Forward(mgr.serv.Port())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to setup port forwarding: %w", err)
@@ -671,11 +656,11 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 	cmd := fmt.Sprintf("%v runner %v %v %v", executorBin, inst.Index(), host, port)
 	ctxTimeout, cancel := context.WithTimeout(ctx, mgr.cfg.Timeouts.VMRunningTime)
 	defer cancel()
-	_, reps, err := inst.Run(ctxTimeout, mgr.reporter, cmd, opts...)
+	_, rep, err := inst.Run(ctxTimeout, mgr.reporter, cmd, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to run fuzzer: %w", err)
 	}
-	if len(reps) == 0 {
+	if rep == nil {
 		// This is the only "OK" outcome.
 		log.Logf(0, "VM %v: running for %v, restarting", inst.Index(), time.Since(start))
 		return nil, nil, nil
@@ -684,7 +669,7 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 	if err != nil {
 		vmInfo = []byte(fmt.Sprintf("error getting VM info: %v\n", err))
 	}
-	return reps, vmInfo, nil
+	return rep, vmInfo, nil
 }
 
 func (mgr *Manager) emailCrash(crash *manager.Crash) {
@@ -723,10 +708,7 @@ func (mgr *Manager) saveCrash(crash *manager.Crash) bool {
 	if crash.Suppressed {
 		flags += " [suppressed]"
 	}
-	log.Logf(0, "VM %v: crash: %v%v", crash.InstanceIndex, crash.Report.Title, flags)
-	for i, report := range crash.TailReports {
-		log.Logf(0, "VM %v: crash(tail%d): %v%v", crash.InstanceIndex, i, report.Title, flags)
-	}
+	log.Logf(0, "VM %v: crash: %v%v", crash.InstanceIndex, crash.Title, flags)
 
 	if mgr.mode.FailOnCrashes {
 		path := filepath.Join(mgr.cfg.Workdir, "report.json")
@@ -763,7 +745,7 @@ func (mgr *Manager) saveCrash(crash *manager.Crash) bool {
 			Suppressed:  crash.Suppressed,
 			Recipients:  crash.Recipients.ToDash(),
 			Log:         crash.Output,
-			Report:      report.SplitReportBytes(crash.Report.Report)[0],
+			Report:      crash.Report.Report,
 			MachineInfo: crash.MachineInfo,
 		}
 		setGuiltyFiles(dc, crash.Report)
@@ -895,27 +877,27 @@ func (mgr *Manager) saveRepro(res *manager.ReproResult) {
 		//    so maybe corrupted report detection is broken.
 		// 3. Reproduction is expensive so it's good to persist the result.
 
-		reproReport := repro.Report
-		output := reproReport.Output
+		report := repro.Report
+		output := report.Output
 
 		var crashFlags dashapi.CrashFlags
 		if res.Strace != nil {
 			// If syzkaller managed to successfully run the repro with strace, send
 			// the report and the output generated under strace.
-			reproReport = res.Strace.Report
+			report = res.Strace.Report
 			output = res.Strace.Output
 			crashFlags = dashapi.CrashUnderStrace
 		}
 
 		dc := &dashapi.Crash{
 			BuildID:       mgr.cfg.Tag,
-			Title:         reproReport.Title,
-			AltTitles:     reproReport.AltTitles,
-			Suppressed:    reproReport.Suppressed,
-			Recipients:    reproReport.Recipients.ToDash(),
+			Title:         report.Title,
+			AltTitles:     report.AltTitles,
+			Suppressed:    report.Suppressed,
+			Recipients:    report.Recipients.ToDash(),
 			Log:           output,
 			Flags:         crashFlags,
-			Report:        report.SplitReportBytes(reproReport.Report)[0],
+			Report:        report.Report,
 			ReproOpts:     repro.Opts.Serialize(),
 			ReproSyz:      progText,
 			ReproC:        cprogText,
@@ -923,7 +905,7 @@ func (mgr *Manager) saveRepro(res *manager.ReproResult) {
 			Assets:        mgr.uploadReproAssets(repro),
 			OriginalTitle: res.Crash.Title,
 		}
-		setGuiltyFiles(dc, reproReport)
+		setGuiltyFiles(dc, report)
 		if _, err := mgr.dash.ReportCrash(dc); err != nil {
 			log.Logf(0, "failed to report repro to dashboard: %v", err)
 		} else {
@@ -1075,22 +1057,6 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		mgr.exit(mgr.mode.Name)
 	}
 
-	// If KFuzzTest is enabled, we exclusively fuzz KFuzzTest targets - so
-	// delete any existing entries in enabled syscalls, and enable all
-	// discovered KFuzzTest targets explicitly.
-	if mgr.cfg.Experimental.EnableKFuzzTest {
-		for call := range enabledSyscalls {
-			delete(enabledSyscalls, call)
-		}
-		data, err := kfuzztest.ExtractData(path.Join(mgr.cfg.KernelObj, "vmlinux"))
-		if err != nil {
-			return nil, err
-		}
-		for _, call := range data.Calls {
-			enabledSyscalls[call] = true
-		}
-	}
-
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	if mgr.phase != phaseInit {
@@ -1138,7 +1104,6 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 				defer mgr.mu.Unlock()
 				return !mgr.saturatedCalls[call]
 			},
-			ModeKFuzzTest: mgr.cfg.Experimental.EnableKFuzzTest,
 		}, rnd, mgr.target)
 		fuzzerObj.AddCandidates(candidates)
 		mgr.fuzzer.Store(fuzzerObj)
@@ -1295,8 +1260,7 @@ func (mgr *Manager) setPhaseLocked(newPhase int) {
 	if mgr.phase == newPhase {
 		panic("repeated phase update")
 	}
-	// In VMLess mode, mgr.reproLoop is nil.
-	if newPhase == phaseTriagedHub && mgr.reproLoop != nil {
+	if newPhase == phaseTriagedHub {
 		// Start reproductions.
 		go mgr.reproLoop.Loop(vm.ShutdownCtx())
 	}

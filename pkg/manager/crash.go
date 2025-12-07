@@ -17,7 +17,6 @@ import (
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/report"
 	"github.com/google/syzkaller/prog"
 )
 
@@ -86,14 +85,10 @@ func (cs *CrashStore) SaveCrash(crash *Crash) (bool, error) {
 		}
 		osutil.WriteFile(filename, data)
 	}
-	reps := append([]*report.Report{crash.Report}, crash.TailReports...)
 	writeOrRemove("log", crash.Output)
 	writeOrRemove("tag", []byte(cs.Tag))
-	writeOrRemove("report", report.MergeReportBytes(reps))
+	writeOrRemove("report", crash.Report.Report)
 	writeOrRemove("machineInfo", crash.MachineInfo)
-	if err := report.AddTitleStat(filepath.Join(dir, "title-stat"), reps); err != nil {
-		return false, fmt.Errorf("report.AddTitleStat: %w", err)
-	}
 
 	return first, nil
 }
@@ -216,7 +211,6 @@ type CrashInfo struct {
 type BugInfo struct {
 	ID            string
 	Title         string
-	TailTitles    []*report.TitleFreqRank
 	FirstTime     time.Time
 	LastTime      time.Time
 	HasRepro      bool
@@ -224,7 +218,6 @@ type BugInfo struct {
 	StraceFile    string // relative to the workdir
 	ReproAttempts int
 	Crashes       []*CrashInfo
-	Rank          int
 }
 
 func (cs *CrashStore) BugInfo(id string, full bool) (*BugInfo, error) {
@@ -240,16 +233,6 @@ func (cs *CrashStore) BugInfo(id string, full bool) (*BugInfo, error) {
 		return nil, err
 	}
 	ret.Title = strings.TrimSpace(string(desc))
-
-	// Bug rank may go up over time if we observe higher ranked bugs as a consequence of the first failure.
-	ret.Rank = report.TitlesToImpact(ret.Title)
-	if titleStat, err := report.ReadStatFile(filepath.Join(dir, "title-stat")); err == nil {
-		ret.TailTitles = report.ExplainTitleStat(titleStat)
-		for _, ti := range ret.TailTitles {
-			ret.Rank = max(ret.Rank, ti.Rank)
-		}
-	}
-
 	ret.FirstTime = osutil.CreationTime(stat)
 	ret.LastTime = stat.ModTime()
 	files, err := osutil.ListDir(dir)

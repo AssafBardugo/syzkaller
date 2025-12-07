@@ -10,10 +10,8 @@ Instructions for a particular VM type or kernel architecture can be found on the
 - [Setup: Linux host, QEMU vm, riscv64 kernel](setup_linux-host_qemu-vm_riscv64-kernel.md)
 - [Setup: Linux host, QEMU vm, s390x kernel](setup_linux-host_qemu-vm_s390x-kernel.md)
 - [Setup: Linux host, Android device, arm32/64 kernel](setup_linux-host_android-device_arm-kernel.md)
-- [Setup: Linux host, Android virtual device, x86-64 kernel](setup_linux-host_android-virtual-device_x86-64-kernel.md)
 - [Setup: Linux isolated host](setup_linux-host_isolated.md)
 - [Setup: Ubuntu host, VMware vm, x86-64 kernel](setup_ubuntu-host_vmware-vm_x86-64-kernel.md)
-- [Setup: Ubuntu host, VirtualBox vm, x86-64 kernel](setup_ubuntu-host_virtualbox-vm_x86-64-kernel.md)
 
 ## Install
 
@@ -67,7 +65,7 @@ Make sure that your GCC meets this requirement, or get a GCC that [syzbot](/docs
 ### Linux Kernel
 
 Besides coverage support in GCC, you also need support for it on the kernel side.
-KCOV was added into mainline Linux kernel in version 4.6 and is be enabled by `CONFIG_KCOV=y` kernel configuration option.
+KCOV was added into mainline Linux kernel in version 4.6 and is be enabled by `CONFIG_KCOV=y` kernel configation option.
 For older kernels you need to at least backport commit [kernel: add kcov code coverage](https://github.com/torvalds/linux/commit/5c9a8750a6409c63a0f01d51a9024861022f6593).
 Besides that, it's recommended to backport all kernel patches that touch `kernel/kcov.c`.
 

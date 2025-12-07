@@ -260,7 +260,3 @@ func (corpus *Corpus) ProgsPerArea() map[string]int {
 	}
 	return ret
 }
-
-func (corpus *Corpus) Cover() []uint64 {
-	return corpus.cover.Serialize()
-}

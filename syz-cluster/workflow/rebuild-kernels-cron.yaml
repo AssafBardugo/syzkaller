@@ -11,8 +11,8 @@ kind: CronWorkflow
 metadata:
   name: rebuild-kernels-cron
 spec:
-  # Three times per day.
-  schedule: "30 */8 * * *"
+  # Twice each day.
+  schedule: "30 */12 * * *"
   concurrencyPolicy: "Replace"
   startingDeadlineSeconds: 0
   workflowSpec:
@@ -63,9 +63,7 @@ spec:
 
           data = json.loads('''{{inputs.parameters.response}}''')
           unique_kernel_configs = sorted(list(set(
-              campaign["kernel_config"]
-              for fuzz_config in data.get("fuzz_targets", [])
-              for campaign in fuzz_config.get("campaigns", [])
+              config["kernel_config"] for config in data.get("fuzz_configs", [])
           )))
           build_requests = []
           for tree in data.get("trees", []):

@@ -126,22 +126,18 @@ func (h *Handler) IncomingEmail(ctx context.Context, msg *email.Email) error {
 
 	var reply string
 	for _, command := range msg.Commands {
-		var err error
 		switch command.Command {
 		case email.CmdUpstream:
-			// Reply nothing on success.
-			err = h.apiClient.UpstreamReport(ctx, reportID, &api.UpstreamReportReq{
+			err := h.apiClient.UpstreamReport(ctx, reportID, &api.UpstreamReportReq{
 				User: msg.Author,
 			})
-		case email.CmdInvalid:
+			if err != nil {
+				reply = fmt.Sprintf("Failed to process the command. Contact %s.",
+					h.emailConfig.SupportEmail)
+			}
 			// Reply nothing on success.
-			err = h.apiClient.InvalidateReport(ctx, reportID)
 		default:
 			reply = "Unknown command"
-		}
-		if err != nil {
-			reply = fmt.Sprintf("Failed to process the command. Contact %s.",
-				h.emailConfig.SupportEmail)
 		}
 	}
 

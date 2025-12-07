@@ -1,7 +1,6 @@
 // Copyright 2024 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-#include <cstring>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -17,8 +16,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "pkg/flatrpc/flatrpc.h"
 
 inline std::ostream& operator<<(std::ostream& ss, const rpc::ExecRequestRawT& req)
 {
@@ -85,34 +82,13 @@ private:
 	ProcIDPool& operator=(const ProcIDPool&) = delete;
 };
 
-class ProcOpts
-{
-public:
-	bool use_cover_edges = false;
-	bool is_kernel_64_bit = false;
-	uint32 slowdown = 0;
-	uint32 syscall_timeout_ms = 0;
-	uint32 program_timeout_ms = 0;
-
-private:
-	friend std::ostream& operator<<(std::ostream& ss, const ProcOpts& opts)
-	{
-		ss << "use_cover_edges=" << opts.use_cover_edges
-		   << " is_kernel_64_bit=" << opts.is_kernel_64_bit
-		   << " slowdown=" << opts.slowdown
-		   << " syscall_timeout_ms=" << opts.syscall_timeout_ms
-		   << " program_timeout_ms=" << opts.program_timeout_ms;
-		return ss;
-	}
-};
-
 // Proc represents one subprocess that runs tests (re-execed syz-executor with 'exec' argument).
 // The object is persistent and re-starts subprocess when it crashes.
 class Proc
 {
 public:
-	Proc(Connection& conn, const char* bin, ProcIDPool& proc_id_pool, int& restarting, const bool& corpus_triaged, int max_signal_fd,
-	     int cover_filter_fd, ProcOpts opts)
+	Proc(Connection& conn, const char* bin, ProcIDPool& proc_id_pool, int& restarting, const bool& corpus_triaged, int max_signal_fd, int cover_filter_fd,
+	     bool use_cover_edges, bool is_kernel_64_bit, uint32 slowdown, uint32 syscall_timeout_ms, uint32 program_timeout_ms)
 	    : conn_(conn),
 	      bin_(bin),
 	      proc_id_pool_(proc_id_pool),
@@ -121,7 +97,11 @@ public:
 	      corpus_triaged_(corpus_triaged),
 	      max_signal_fd_(max_signal_fd),
 	      cover_filter_fd_(cover_filter_fd),
-	      opts_(opts),
+	      use_cover_edges_(use_cover_edges),
+	      is_kernel_64_bit_(is_kernel_64_bit),
+	      slowdown_(slowdown),
+	      syscall_timeout_ms_(syscall_timeout_ms),
+	      program_timeout_ms_(program_timeout_ms),
 	      req_shmem_(kMaxInput),
 	      resp_shmem_(kMaxOutput),
 	      resp_mem_(static_cast<OutputData*>(resp_shmem_.Mem()))
@@ -178,7 +158,7 @@ public:
 #endif
 			// Sandbox setup can take significant time.
 			if (state_ == State::Handshaking)
-				timeout = 60 * 1000 * opts_.slowdown;
+				timeout = 60 * 1000 * slowdown_;
 			if (now > exec_start_ + timeout) {
 				Restart();
 				return;
@@ -200,6 +180,7 @@ public:
 		return;
 	}
 
+private:
 	enum State : uint8 {
 		// The process has just started.
 		Started,
@@ -211,12 +192,6 @@ public:
 		Executing,
 	};
 
-	State GetState() const
-	{
-		return state_;
-	}
-
-private:
 	Connection& conn_;
 	const char* const bin_;
 	ProcIDPool& proc_id_pool_;
@@ -225,7 +200,11 @@ private:
 	const bool& corpus_triaged_;
 	const int max_signal_fd_;
 	const int cover_filter_fd_;
-	const ProcOpts opts_;
+	const bool use_cover_edges_;
+	const bool is_kernel_64_bit_;
+	const uint32 slowdown_;
+	const uint32 syscall_timeout_ms_;
+	const uint32 program_timeout_ms_;
 	State state_ = State::Started;
 	std::optional<Subprocess> process_;
 	ShmemFile req_shmem_;
@@ -378,14 +357,14 @@ private:
 		sandbox_arg_ = msg_->exec_opts->sandbox_arg();
 		handshake_req req = {
 		    .magic = kInMagic,
-		    .use_cover_edges = opts_.use_cover_edges,
-		    .is_kernel_64_bit = opts_.is_kernel_64_bit,
+		    .use_cover_edges = use_cover_edges_,
+		    .is_kernel_64_bit = is_kernel_64_bit_,
 		    .flags = exec_env_,
 		    .pid = static_cast<uint64>(id_),
 		    .sandbox_arg = static_cast<uint64>(sandbox_arg_),
-		    .syscall_timeout_ms = opts_.syscall_timeout_ms,
+		    .syscall_timeout_ms = syscall_timeout_ms_,
 		    .program_timeout_ms = ProgramTimeoutMs(),
-		    .slowdown_scale = opts_.slowdown,
+		    .slowdown_scale = slowdown_,
 		};
 		if (write(req_pipe_, &req, sizeof(req)) != sizeof(req)) {
 			debug("request pipe write failed (errno=%d)\n", errno);
@@ -547,7 +526,7 @@ private:
 	uint32 ProgramTimeoutMs() const
 	{
 		// Glob requests can expand to >10K files and can take a while to run.
-		return opts_.program_timeout_ms * (req_type_ == rpc::RequestType::Program ? 1 : 10);
+		return program_timeout_ms_ * (req_type_ == rpc::RequestType::Program ? 1 : 10);
 	}
 };
 
@@ -566,7 +545,8 @@ public:
 		int cover_filter_fd = cover_filter_ ? cover_filter_->FD() : -1;
 		for (int i = 0; i < num_procs; i++)
 			procs_.emplace_back(new Proc(conn, bin, *proc_id_pool_, restarting_, corpus_triaged_,
-						     max_signal_fd, cover_filter_fd, proc_opts_));
+						     max_signal_fd, cover_filter_fd, use_cover_edges_, is_kernel_64_bit_, slowdown_,
+						     syscall_timeout_ms_, program_timeout_ms_));
 
 		for (;;)
 			Loop();
@@ -583,12 +563,11 @@ private:
 	std::vector<std::string> leak_frames_;
 	int restarting_ = 0;
 	bool corpus_triaged_ = false;
-#if GOOS_linux
-	bool is_leak_enabled_ = false;
-	uint64 execs_since_leak_check_ = 0;
-	std::vector<char*> char_leak_frames_;
-#endif
-	ProcOpts proc_opts_{};
+	bool use_cover_edges_ = false;
+	bool is_kernel_64_bit_ = false;
+	uint32 slowdown_ = 0;
+	uint32 syscall_timeout_ms_ = 0;
+	uint32 program_timeout_ms_ = 0;
 
 	friend std::ostream& operator<<(std::ostream& ss, const Runner& runner)
 	{
@@ -597,7 +576,11 @@ private:
 		   << " cover_filter=" << !!runner.cover_filter_
 		   << " restarting=" << runner.restarting_
 		   << " corpus_triaged=" << runner.corpus_triaged_
-		   << " " << runner.proc_opts_
+		   << " use_cover_edges=" << runner.use_cover_edges_
+		   << " is_kernel_64_bit=" << runner.is_kernel_64_bit_
+		   << " slowdown=" << runner.slowdown_
+		   << " syscall_timeout_ms=" << runner.syscall_timeout_ms_
+		   << " program_timeout_ms=" << runner.program_timeout_ms_
 		   << "\n";
 		ss << "procs:\n";
 		for (const auto& proc : runner.procs_)
@@ -634,52 +617,17 @@ private:
 				failmsg("unknown host message type", "type=%d", static_cast<int>(raw.msg.type));
 		}
 
-#if GOOS_linux
-		if (IsScheduledForLeakCheck() && AreProcsIdle()) {
-			debug("Running leak check...\n");
-			check_leaks(char_leak_frames_.data(), char_leak_frames_.size());
-			debug("Done running leak check\n");
-			execs_since_leak_check_ = 0;
-		}
-#endif
-
 		for (auto& proc : procs_) {
 			proc->Ready(select, now, requests_.empty());
-			if (!IsScheduledForLeakCheck() && !requests_.empty()) {
-				if (proc->Execute(requests_.front())) {
+			if (!requests_.empty()) {
+				if (proc->Execute(requests_.front()))
 					requests_.pop_front();
-#if GOOS_linux
-					++execs_since_leak_check_;
-#endif
-				}
 			}
 		}
 
 		if (restarting_ < 0 || restarting_ > static_cast<int>(procs_.size()))
 			failmsg("bad restarting", "restarting=%d", restarting_);
 	}
-
-#if GOOS_linux
-	bool IsScheduledForLeakCheck()
-	{
-		const uint64 kRunLeakCheckEvery = 2 * procs_.size();
-		return is_leak_enabled_ &&
-		       corpus_triaged_ &&
-		       execs_since_leak_check_ >= kRunLeakCheckEvery;
-	}
-
-	bool AreProcsIdle()
-	{
-		return std::all_of(procs_.begin(), procs_.end(), [](const std::unique_ptr<Proc>& proc) {
-			return proc->GetState() == Proc::State::Idle;
-		});
-	}
-#else
-	constexpr bool IsScheduledForLeakCheck()
-	{
-		return false;
-	}
-#endif
 
 	// Implementation must match that in pkg/rpcserver/rpcserver.go.
 	uint64 HashAuthCookie(uint64 cookie)
@@ -715,12 +663,11 @@ private:
 		      conn_reply.slowdown, conn_reply.syscall_timeout_ms,
 		      conn_reply.program_timeout_ms, static_cast<uint64>(conn_reply.features));
 		leak_frames_ = conn_reply.leak_frames;
-
-		proc_opts_.use_cover_edges = conn_reply.cover_edges;
-		proc_opts_.is_kernel_64_bit = is_kernel_64_bit = conn_reply.kernel_64_bit;
-		proc_opts_.slowdown = conn_reply.slowdown;
-		proc_opts_.syscall_timeout_ms = conn_reply.syscall_timeout_ms;
-		proc_opts_.program_timeout_ms = conn_reply.program_timeout_ms;
+		use_cover_edges_ = conn_reply.cover_edges;
+		is_kernel_64_bit_ = is_kernel_64_bit = conn_reply.kernel_64_bit;
+		slowdown_ = conn_reply.slowdown;
+		syscall_timeout_ms_ = conn_reply.syscall_timeout_ms;
+		program_timeout_ms_ = conn_reply.program_timeout_ms;
 		if (conn_reply.cover)
 			max_signal_.emplace();
 
@@ -751,13 +698,6 @@ private:
 				debug("failed: %s\n", reason);
 				res->reason = reason;
 			}
-#if GOOS_linux
-			if (feat.id == rpc::Feature::Leak && !reason) {
-				is_leak_enabled_ = true;
-				for (auto& s : leak_frames_)
-					char_leak_frames_.push_back(s.data());
-			}
-#endif
 			info_req.features.push_back(std::move(res));
 		}
 		for (auto id : rpc::EnumValuesFeature()) {
@@ -801,11 +741,9 @@ private:
 			ExecuteBinary(msg);
 			return;
 		}
-		if (!IsScheduledForLeakCheck()) {
-			for (auto& proc : procs_) {
-				if (proc->Execute(msg))
-					return;
-			}
+		for (auto& proc : procs_) {
+			if (proc->Execute(msg))
+				return;
 		}
 		requests_.push_back(std::move(msg));
 	}
@@ -898,7 +836,7 @@ private:
 		close(stdin_pipe[0]);
 		close(stdout_pipe[1]);
 
-		int status = process.WaitAndKill(5 * proc_opts_.program_timeout_ms);
+		int status = process.WaitAndKill(5 * program_timeout_ms_);
 
 		std::vector<uint8_t> output;
 		for (;;) {

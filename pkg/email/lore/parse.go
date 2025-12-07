@@ -20,7 +20,7 @@ type Thread struct {
 	MessageID string
 	Type      dashapi.DiscussionType
 	BugIDs    []string
-	Messages  []*Email
+	Messages  []*email.Email
 }
 
 // Series represents a single patch series sent over email.
@@ -35,19 +35,19 @@ type Series struct {
 
 type Patch struct {
 	Seq int
-	*Email
+	*email.Email
 }
 
 // Threads extracts individual threads from a list of emails.
-func Threads(emails []*Email) []*Thread {
+func Threads(emails []*email.Email) []*Thread {
 	return listThreads(emails, 0)
 }
 
-func listThreads(emails []*Email, maxDepth int) []*Thread {
+func listThreads(emails []*email.Email, maxDepth int) []*Thread {
 	ctx := &parseCtx{
 		maxDepth: maxDepth,
-		messages: map[string]*Email{},
-		next:     map[*Email][]*Email{},
+		messages: map[string]*email.Email{},
+		next:     map[*email.Email][]*email.Email{},
 	}
 	for _, email := range emails {
 		ctx.record(email)
@@ -57,7 +57,7 @@ func listThreads(emails []*Email, maxDepth int) []*Thread {
 }
 
 // PatchSeries is similar to Threads, but returns only the patch series submitted to the mailing lists.
-func PatchSeries(emails []*Email) []*Series {
+func PatchSeries(emails []*email.Email) []*Series {
 	var ret []*Series
 	// Normally, all following series patches are sent in response to the first email sent.
 	// So there's no sense to look at deeper replies.
@@ -91,11 +91,6 @@ func PatchSeries(emails []*Email) []*Series {
 			seq := patch.Seq.ValueOr(1)
 			if seq == 0 {
 				// The cover email is not of interest.
-				continue
-			}
-			if !email.HasPatch {
-				// Sometimes users reply to the series keeping the original subject.
-				// Ignore such messages.
 				continue
 			}
 			if hasSeq[seq] {
@@ -185,17 +180,17 @@ func parsePatchSubject(subject string) (PatchSubject, bool) {
 type parseCtx struct {
 	maxDepth int
 	threads  []*Thread
-	messages map[string]*Email
-	next     map[*Email][]*Email
+	messages map[string]*email.Email
+	next     map[*email.Email][]*email.Email
 }
 
-func (c *parseCtx) record(msg *Email) {
+func (c *parseCtx) record(msg *email.Email) {
 	c.messages[msg.MessageID] = msg
 }
 
 func (c *parseCtx) process() {
 	// List messages for which we dont't have ancestors.
-	nodes := []*Email{}
+	nodes := []*email.Email{}
 	for _, msg := range c.messages {
 		if msg.InReplyTo == "" || c.messages[msg.InReplyTo] == nil {
 			nodes = append(nodes, msg)
@@ -225,15 +220,15 @@ func (c *parseCtx) process() {
 	}
 }
 
-func (c *parseCtx) visit(msg *Email, thread *Thread, depth int) {
+func (c *parseCtx) visit(msg *email.Email, thread *Thread, depth int) {
 	var oldInfo *email.OldThreadInfo
 	if thread != nil {
 		oldInfo = &email.OldThreadInfo{
 			ThreadType: thread.Type,
 		}
 	}
-	msgType := DiscussionType(msg.Email)
-	switch email.NewMessageAction(msg.Email, msgType, oldInfo) {
+	msgType := DiscussionType(msg)
+	switch email.NewMessageAction(msg, msgType, oldInfo) {
 	case email.ActionIgnore:
 		thread = nil
 	case email.ActionAppend:
@@ -243,7 +238,7 @@ func (c *parseCtx) visit(msg *Email, thread *Thread, depth int) {
 			MessageID: msg.MessageID,
 			Subject:   msg.Subject,
 			Type:      msgType,
-			Messages:  []*Email{msg},
+			Messages:  []*email.Email{msg},
 		}
 		c.threads = append(c.threads, thread)
 	}

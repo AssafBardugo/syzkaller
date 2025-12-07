@@ -39,5 +39,6 @@ RUN useradd --create-home syzkaller
 
 COPY --from=syzkaller-builder /build/bin/ /syzkaller/bin/
 COPY --from=boot-step-builder /bin/boot-step /bin/boot-step
+COPY syz-cluster/workflow/configs/ /configs/
 
 ENTRYPOINT ["/bin/boot-step"]

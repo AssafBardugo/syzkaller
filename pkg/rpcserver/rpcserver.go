@@ -111,11 +111,10 @@ type server struct {
 }
 
 type Stats struct {
-	StatExecs            *stat.Val
-	StatNumFuzzing       *stat.Val
-	StatVMRestarts       *stat.Val
-	StatModules          *stat.Val
-	StatExecutorRestarts *stat.Val
+	StatExecs      *stat.Val
+	StatNumFuzzing *stat.Val
+	StatVMRestarts *stat.Val
+	StatModules    *stat.Val
 }
 
 func NewStats() Stats {
@@ -140,8 +139,6 @@ func NewNamedStats(name string) Stats {
 			stat.Rate{}, stat.NoGraph),
 		StatModules: stat.New("modules"+suffix, "Number of loaded kernel modules",
 			stat.NoGraph, stat.Link("/modules"+linkSuffix)),
-		StatExecutorRestarts: stat.New("executor restarts"+suffix,
-			"Number of times executor process was restarted", stat.Rate{}, stat.Graph("executor")),
 	}
 }
 
@@ -212,7 +209,8 @@ func newImpl(cfg *Config, mgr Manager) *server {
 			statExecRetries: stat.New("exec retries",
 				"Number of times a test program was restarted because the first run failed",
 				stat.Rate{}, stat.Graph("executor")),
-			statExecutorRestarts:   cfg.Stats.StatExecutorRestarts,
+			statExecutorRestarts: stat.New("executor restarts",
+				"Number of times executor process was restarted", stat.Rate{}, stat.Graph("executor")),
 			statExecBufferTooSmall: queue.StatExecBufferTooSmall,
 			statExecs:              cfg.Stats.StatExecs,
 			statNoExecRequests:     queue.StatNoExecRequests,

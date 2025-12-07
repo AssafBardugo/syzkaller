@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,7 +22,6 @@ import (
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/pkg/report/crash"
 	"github.com/google/syzkaller/sys/targets"
 	"github.com/google/syzkaller/vm/vmimpl"
 )
@@ -326,7 +324,7 @@ func (pool *Pool) Count() int {
 	return pool.cfg.Count
 }
 
-func (pool *Pool) Create(ctx context.Context, workdir string, index int) (vmimpl.Instance, error) {
+func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
 	sshkey := pool.env.SSHKey
 	sshuser := pool.env.SSHUser
 	if pool.env.Image == "9p" {
@@ -343,16 +341,9 @@ func (pool *Pool) Create(ctx context.Context, workdir string, index int) (vmimpl
 	}
 
 	for i := 0; ; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		inst, err := pool.ctor(workdir, sshkey, sshuser, index)
 		if err == nil {
 			return inst, nil
-		}
-		if errors.Is(err, vmimpl.ErrCantSSH) {
-			// It is most likely a boot crash, just return the error as is.
-			return nil, err
 		}
 		// Older qemu prints "could", newer -- "Could".
 		if i < 1000 && strings.Contains(err.Error(), "ould not set up host forwarding rule") {
@@ -364,7 +355,6 @@ func (pool *Pool) Create(ctx context.Context, workdir string, index int) (vmimpl
 		if i < 1000 && strings.Contains(err.Error(), "Address already in use") {
 			continue
 		}
-
 		return nil, err
 	}
 }
@@ -735,11 +725,8 @@ func (inst *instance) Diagnose(rep *report.Report) ([]byte, bool) {
 			return output, wait
 		}
 	}
-
-	if !needsRegisterInfo(rep) {
-		return nil, false
-	}
-
+	// TODO: we don't need registers on all reports. Probably only relevant for "crashes"
+	// (NULL derefs, paging faults, etc), but is not useful for WARNING/BUG/HANG (?).
 	ret := []byte(fmt.Sprintf("%s Registers:\n", time.Now().Format("15:04:05 ")))
 	for cpu := 0; cpu < inst.cfg.CPU; cpu++ {
 		regs, err := inst.hmp("info registers", cpu)
@@ -752,33 +739,6 @@ func (inst *instance) Diagnose(rep *report.Report) ([]byte, bool) {
 		}
 	}
 	return ret, false
-}
-
-func needsRegisterInfo(rep *report.Report) bool {
-	// Do not collect register dump for the listed below report types.
-	// By default collect as crash (for unknown types too).
-	switch rep.Type {
-	case crash.Warning,
-		crash.AtomicSleep,
-		crash.Hang,
-		crash.DoS,
-		crash.KCSANAssert,
-		crash.KCSANDataRace,
-		crash.KCSANUnknown,
-		crash.KMSANInfoLeak,
-		crash.KMSANUninitValue,
-		crash.KMSANUnknown,
-		crash.KMSANUseAfterFreeRead,
-		crash.LockdepBug,
-		crash.MemoryLeak,
-		crash.RefcountWARNING,
-		crash.LostConnection,
-		crash.SyzFailure,
-		crash.UnexpectedReboot:
-		return false
-	default:
-		return true
-	}
 }
 
 func (inst *instance) ssh(args ...string) ([]byte, error) {

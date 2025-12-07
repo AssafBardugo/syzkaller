@@ -81,8 +81,7 @@ func main() {
 	ret := &BuildResult{}
 	if err != nil {
 		log.Printf("failed to checkout: %v", err)
-		reportResults(ctx, client, nil, nil, []byte(err.Error()))
-		return
+		uploadReq.Log = []byte(err.Error())
 	} else {
 		if *flagSmokeBuild {
 			skip, err := alreadyBuilt(ctx, client, uploadReq)
@@ -96,8 +95,7 @@ func main() {
 		ret, err = buildKernel(tracer, req)
 		if err != nil {
 			log.Printf("build process failed: %v", err)
-			reportResults(ctx, client, nil, nil, []byte(err.Error()))
-			return
+			uploadReq.Log = []byte(err.Error())
 		} else {
 			uploadReq.Compiler = ret.Compiler
 			uploadReq.Config = ret.Config
@@ -110,29 +108,19 @@ func main() {
 			}
 		}
 	}
-	reportResults(ctx, client, uploadReq, ret.Finding, output.Bytes())
+	reportResults(ctx, client, req.SeriesID != "", uploadReq, ret.Finding, output.Bytes())
 }
 
-func reportResults(ctx context.Context, client *api.Client,
+func reportResults(ctx context.Context, client *api.Client, patched bool,
 	uploadReq *api.UploadBuildReq, finding *api.NewFinding, output []byte) {
-	var buildID string
-	status := api.TestPassed
-	if uploadReq != nil {
-		if !uploadReq.BuildSuccess {
-			status = api.TestFailed
-		}
-		buildInfo, err := client.UploadBuild(ctx, uploadReq)
-		if err != nil {
-			app.Fatalf("failed to upload build: %v", err)
-		}
-		log.Printf("uploaded build, reply: %q", buildInfo)
-		buildID = buildInfo.ID
-	} else {
-		status = api.TestError
+	buildInfo, err := client.UploadBuild(ctx, uploadReq)
+	if err != nil {
+		app.Fatalf("failed to upload build: %v", err)
 	}
+	log.Printf("uploaded build, reply: %q", buildInfo)
 	osutil.WriteJSON(filepath.Join(*flagOutput, "result.json"), &api.BuildResult{
-		BuildID: buildID,
-		Success: status == api.TestPassed,
+		BuildID: buildInfo.ID,
+		Success: uploadReq.BuildSuccess,
 	})
 	if *flagSmokeBuild {
 		return
@@ -140,17 +128,18 @@ func reportResults(ctx context.Context, client *api.Client,
 	testResult := &api.TestResult{
 		SessionID: *flagSession,
 		TestName:  *flagTestName,
-		Result:    status,
+		Result:    api.TestFailed,
 		Log:       output,
 	}
-	if uploadReq != nil {
-		if uploadReq.SeriesID != "" {
-			testResult.PatchedBuildID = buildID
-		} else {
-			testResult.BaseBuildID = buildID
-		}
+	if uploadReq.BuildSuccess {
+		testResult.Result = api.TestPassed
 	}
-	err := client.UploadTestResult(ctx, testResult)
+	if patched {
+		testResult.PatchedBuildID = buildInfo.ID
+	} else {
+		testResult.BaseBuildID = buildInfo.ID
+	}
+	err = client.UploadTestResult(ctx, testResult)
 	if err != nil {
 		app.Fatalf("failed to report the test result: %v", err)
 	}
@@ -263,8 +252,8 @@ func buildKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest) (*BuildR
 			ret.Finding.Log = kernelError.Output
 			return ret, nil
 		case errors.As(err, &verboseError):
-			tracer.Log("verbose error: %s / %s", verboseError, verboseError.Output)
-			ret.Finding.Report = []byte(verboseError.Error())
+			tracer.Log("verbose error: %q / %s", verboseError.Title, verboseError.Output)
+			ret.Finding.Report = []byte(verboseError.Title)
 			ret.Finding.Log = verboseError.Output
 			return ret, nil
 		default:
@@ -293,8 +282,7 @@ func saveSymbolHashes(tracer debugtracer.DebugTracer) error {
 	if err != nil {
 		return fmt.Errorf("failed to query symbol hashes: %w", err)
 	}
-	tracer.Log("extracted hashes for %d text symbols and %d data symbols",
-		len(hashes.Text), len(hashes.Data))
+	tracer.Log("extracted hashes for %d symbols", len(hashes))
 	file, err := os.Create(filepath.Join(*flagOutput, "symbol_hashes.json"))
 	if err != nil {
 		return fmt.Errorf("failed to open symbol_hashes.json: %w", err)

@@ -39,10 +39,10 @@ spec:
         resources:
           requests:
             cpu: 6
-            memory: 24G
+            memory: 12G
           limits:
             cpu: 8
-            memory: 32G
+            memory: 24G
         volumeMounts:
         - name: workdir
           mountPath: /workdir

@@ -192,7 +192,7 @@ func compilerIdentity(compiler string) (string, error) {
 	arg, timeout := "--version", time.Minute
 	if bazel {
 		// Bazel episodically fails with 1 min timeout.
-		timeout = 10 * time.Minute
+		arg, timeout = "", 10*time.Minute
 	}
 	output, err := osutil.RunCmd(timeout, "", compiler, arg)
 	if err != nil {
@@ -208,9 +208,6 @@ func compilerIdentity(compiler string) (string, error) {
 				continue
 			}
 			if strings.HasPrefix(line, "WARNING: ") {
-				continue
-			}
-			if strings.Contains(line, "Downloading https://releases.bazel") {
 				continue
 			}
 		}
@@ -345,7 +342,6 @@ var buildFailureCauses = [...]buildFailureCause{
 	{pattern: regexp.MustCompile(`FAILED unresolved symbol`)},
 	{pattern: regexp.MustCompile(`No rule to make target`)},
 	{pattern: regexp.MustCompile(`^Killed$`)},
-	{pattern: regexp.MustCompile(`error\[.*?\]: `)},
 	{weak: true, pattern: regexp.MustCompile(`: not found`)},
 	{weak: true, pattern: regexp.MustCompile(`: final link failed: `)},
 	{weak: true, pattern: regexp.MustCompile(`collect2: error: `)},

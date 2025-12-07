@@ -104,7 +104,7 @@ ifeq ("$(TARGETOS)", "trusty")
 endif
 
 .PHONY: all clean host target \
-	manager executor kfuzztest ci hub \
+	manager executor ci hub \
 	execprog mutate prog2c trace2syz repro upgrade db \
 	usbgen symbolize cover kconf syz-build crush \
 	bin/syz-extract bin/syz-fmt \
@@ -118,7 +118,7 @@ endif
 
 all: host target
 host: manager repro mutate prog2c db upgrade
-target: execprog executor check_syzos
+target: execprog executor
 
 executor: descriptions
 ifeq ($(TARGETOS),fuchsia)
@@ -217,14 +217,6 @@ syz-build:
 bisect: descriptions
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-bisect github.com/google/syzkaller/tools/syz-bisect
 
-ifeq ($(HOSTOS), linux)
-kfuzztest: descriptions
-	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-kfuzztest github.com/google/syzkaller/syz-kfuzztest
-else
-kfuzztest:
-	@echo "Skipping kfuzztest build (it's Linux-only)"
-endif
-
 verifier: descriptions
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-verifier github.com/google/syzkaller/syz-verifier
 
@@ -271,9 +263,7 @@ format_cpp:
 	clang-format --style=file -i executor/*.cc executor/*.h \
 		executor/android/android_seccomp.h \
 		tools/kcovtrace/*.c tools/kcovfuzzer/*.c tools/fops_probe/*.cc \
-		tools/clang/*.h \
-		tools/clang/declextract/*.h tools/clang/declextract/*.cpp \
-		tools/clang/codesearch/*.h tools/clang/codesearch/*.cpp
+		tools/syz-declextract/clangtool/*.cpp tools/syz-declextract/clangtool/*.h
 
 format_sys: bin/syz-fmt
 	bin/syz-fmt all
@@ -282,7 +272,7 @@ bin/syz-fmt:
 	$(HOSTGO) build $(GOHOSTFLAGS) -o $@ ./tools/syz-fmt
 
 configs: kconf
-	bin/syz-kconf -config dashboard/config/linux/main.yml -sourcedir $(SOURCEDIR) -instance=$(INSTANCE)
+	bin/syz-kconf -config dashboard/config/linux/main.yml -sourcedir $(SOURCEDIR)
 
 tidy: descriptions
 	clang-tidy -quiet -header-filter=executor/[^_].* -warnings-as-errors=* \
@@ -294,7 +284,7 @@ tidy: descriptions
 		executor/*.cc
 
 lint:
-	CGO_ENABLED=1 $(HOSTGO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+	CGO_ENABLED=1 $(HOSTGO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	CGO_ENABLED=1 $(HOSTGO) build -buildmode=plugin -o bin/syz-linter.so ./tools/syz-linter
 	bin/golangci-lint run ./...
 
@@ -435,9 +425,6 @@ check_links:
 
 check_html:
 	./tools/check-html.sh
-
-check_syzos: executor
-	./tools/check-syzos.sh 2>/dev/null
 
 # Check that the diff is empty. This is meant to be executed after generating
 # and formatting the code to make sure that everything is committed.

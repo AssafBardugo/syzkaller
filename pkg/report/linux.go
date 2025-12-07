@@ -1148,8 +1148,7 @@ var linuxStackParams = &stackParams{
 		regexp.MustCompile(`Freed:`),
 		regexp.MustCompile(`Freed by task [0-9]+:`),
 		// Match 'backtrace:', but exclude 'stack backtrace:'
-		// Also match optional crc hash for KMEMLEAK reports.
-		regexp.MustCompile(`[^k] backtrace(?: \(crc [[:xdigit:]]*\))?:`),
+		regexp.MustCompile(`[^k] backtrace:`),
 		regexp.MustCompile(`Backtrace:`),
 		regexp.MustCompile(`Uninit was stored to memory at`),
 	},
@@ -1398,8 +1397,6 @@ var linuxStackParams = &stackParams{
 		"__timer_delete_sync",
 		"sk_stop_timer_sync",
 		"__mod_timer",
-		"fast_dput",
-		"dput",
 	},
 	corruptedLines: []*regexp.Regexp{
 		// Fault injection stacks are frequently intermixed with crash reports.
@@ -1514,11 +1511,7 @@ var linuxOopses = append([]*oops{
 						compile("(Local variable .* created at:|Uninit was created at:)"),
 						parseStackTrace,
 					},
-					skip: []string{
-						"alloc_skb", "netlink_ack", "netlink_rcv_skb",
-						// Encryption routines are the place where we hit the bug, but
-						// the generic code is a bad candidate for bug titles.
-						"_encrypt$", "^(?:crypto|cipher|drbg|rng)_"},
+					skip: []string{"alloc_skb", "netlink_ack", "netlink_rcv_skb"},
 				},
 				noStackTrace: true,
 			},
@@ -1757,7 +1750,7 @@ var linuxOopses = append([]*oops{
 				fmt:   "memory leak in %[1]v",
 				stack: &stackFmt{
 					parts: []*regexp.Regexp{
-						compile("backtrace(?: \\(crc [[:xdigit:]]*\\))?:"),
+						compile("backtrace:"),
 						parseStackTrace,
 					},
 					skip: []string{"kmemleak", "mmap", "kmem", "slab", "alloc", "create_object",
@@ -1813,7 +1806,7 @@ var linuxOopses = append([]*oops{
 		[]byte("WARNING:"),
 		[]oopsFormat{
 			{
-				title: compile("WARNING: .*lib/debugobjects\\.c.* (?:debug_print|debug_check|at)"),
+				title: compile("WARNING: .*lib/debugobjects\\.c.* (?:debug_print|debug_check)"),
 				fmt:   "WARNING: ODEBUG bug in %[1]v",
 				// Skip all users of ODEBUG as well.
 				stack: warningStackFmt("debug_", "rcu", "hrtimer_", "timer_",
@@ -1821,22 +1814,22 @@ var linuxOopses = append([]*oops{
 					"vfree", "__free_", "debug_check", "kobject_"),
 			},
 			{
-				title: compile("WARNING: .*mm/usercopy\\.c.* (?:usercopy_warn|at)"),
+				title: compile("WARNING: .*mm/usercopy\\.c.* usercopy_warn"),
 				fmt:   "WARNING: bad usercopy in %[1]v",
 				stack: warningStackFmt("usercopy", "__check"),
 			},
 			{
-				title: compile("WARNING: .*lib/kobject\\.c.* (?:kobject_|at)"),
+				title: compile("WARNING: .*lib/kobject\\.c.* kobject_"),
 				fmt:   "WARNING: kobject bug in %[1]v",
 				stack: warningStackFmt("kobject_"),
 			},
 			{
-				title: compile("WARNING: .*fs/proc/generic\\.c.* (?:proc_register|at)"),
+				title: compile("WARNING: .*fs/proc/generic\\.c.* proc_register"),
 				fmt:   "WARNING: proc registration bug in %[1]v",
 				stack: warningStackFmt("proc_"),
 			},
 			{
-				title: compile("WARNING: .*lib/refcount\\.c.* (?:refcount_|at)"),
+				title: compile("WARNING: .*lib/refcount\\.c.* refcount_"),
 				fmt:   "WARNING: refcount bug in %[1]v",
 				stack: warningStackFmt("refcount", "kobject_"),
 			},
@@ -1875,12 +1868,6 @@ var linuxOopses = append([]*oops{
 				title: compile("WARNING: .* usb_submit_urb"),
 				fmt:   "WARNING in %[1]v/usb_submit_urb",
 				stack: warningStackFmt("usb_submit_urb", "usb_start_wait_urb", "usb_bulk_msg", "usb_interrupt_msg", "usb_control_msg"),
-			},
-			{
-				// Format introduced in https://lore.kernel.org/all/20251110114633.202485143@infradead.org/.
-				title: compile(`WARNING: {{SRC}} at 0x\d+, CPU#\d+`),
-				fmt:   "WARNING in %[2]v",
-				stack: warningStackFmt(),
 			},
 			{
 				title: compile("WARNING: .* at {{SRC}} {{FUNC}}"),

@@ -5,13 +5,10 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 
 <table class="list_table">
 	<caption>Corpus{{if $.Call}} for {{$.Call}}{{end}}:</caption>
-	<thead>
 	<tr>
 		<th>Coverage</th>
 		<th>Program</th>
 	</tr>
-	</thead>
-	<tbody>
 	{{range $inp := $.Inputs}}
 	<tr>
 		<td>
@@ -23,5 +20,4 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 		<td><a href="/input?sig={{$inp.Sig}}">{{$inp.Short}}</a></td>
 	</tr>
 	{{end}}
-	</tbody>
 </table>

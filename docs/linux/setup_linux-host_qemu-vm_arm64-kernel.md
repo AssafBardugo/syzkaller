@@ -5,7 +5,7 @@ This document will detail the steps involved in setting up a Syzkaller instance 
 ## Create a disk image
 
 We will use buildroot to create the disk image.
-You can obtain buildroot from [here](https://buildroot.org/download.html).
+You can obtain buildroot from [here](https://buildroot.uclibc.org/download.html).
 Extract the tarball and perform a `make menuconfig` inside it.
 Choose the following options.
 
@@ -32,7 +32,7 @@ Choose the following options.
 
 Run `make`. After the build, confirm that `output/images/rootfs.ext3` exists.
 
-If you're experiencing a very slow sshd start up time with arm64 qemu running on x86, the reason is probably low entropy and it be "fixed" with installing `haveged`. It can be found in the buildroot `menuconfig`:
+If you're expreriencing a very slow sshd start up time with arm64 qemu running on x86, the reason is probably low entropy and it be "fixed" with installing `haveged`. It can be found in the buildroot `menuconfig`:
 
 ```
     Target packages

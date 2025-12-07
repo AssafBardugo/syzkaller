@@ -17,8 +17,6 @@
 #ifndef FLATBUFFERS_H_
 #define FLATBUFFERS_H_
 
-#include <algorithm>
-
 // TODO: These includes are for mitigating the pains of users editing their
 // source because they relied on flatbuffers.h to include everything for them.
 #include "flatbuffers/array.h"
@@ -76,20 +74,8 @@ inline const uint8_t *GetBufferStartFromRootPointer(const void *root) {
 }
 
 /// @brief This return the prefixed size of a FlatBuffer.
-template<typename SizeT = uoffset_t>
-inline SizeT GetPrefixedSize(const uint8_t *buf) {
-  return ReadScalar<SizeT>(buf);
-}
-
-// Gets the total length of the buffer given a sized prefixed FlatBuffer.
-//
-// This includes the size of the prefix as well as the buffer:
-//
-//  [size prefix][flatbuffer]
-//  |---------length--------|
-template<typename SizeT = uoffset_t>
-inline SizeT GetSizePrefixedBufferLength(const uint8_t *const buf) {
-  return ReadScalar<SizeT>(buf) + sizeof(SizeT);
+inline uoffset_t GetPrefixedSize(const uint8_t *buf) {
+  return ReadScalar<uoffset_t>(buf);
 }
 
 // Base class for native objects (FlatBuffer data de-serialized into native
