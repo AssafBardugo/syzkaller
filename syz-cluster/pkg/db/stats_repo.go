@@ -39,6 +39,20 @@ ORDER BY Date`,
 	})
 }
 
+func (repo *StatsRepository) ReportsPerWeek(ctx context.Context) (
+	[]*CountPerWeek, error) {
+	return readEntities[CountPerWeek](ctx, repo.client.Single(), spanner.Statement{
+		SQL: `SELECT
+  TIMESTAMP_TRUNC(SessionReports.ReportedAt, WEEK) as Date,
+  COUNT(*) as Count
+FROM Findings
+JOIN SessionReports ON SessionReports.SessionID = Findings.SessionID
+WHERE SessionReports.Moderation = FALSE AND SessionReports.ReportedAt IS NOT NULL
+GROUP BY Date
+ORDER BY Date`,
+	})
+}
+
 func (repo *StatsRepository) FindingsPerWeek(ctx context.Context) (
 	[]*CountPerWeek, error) {
 	return readEntities[CountPerWeek](ctx, repo.client.Single(), spanner.Statement{
@@ -46,31 +60,52 @@ func (repo *StatsRepository) FindingsPerWeek(ctx context.Context) (
   TIMESTAMP_TRUNC(Sessions.FinishedAt, WEEK) as Date,
   COUNT(*) as Count
 FROM Findings
-JOIN Sessions ON Sessions.ID = Findings.SessionID
+JOIN Sessions ON Sessions.ID = Findings.SessionID AND Sessions.FinishedAt IS NOT NULL
 GROUP BY Date
 ORDER BY Date`,
 	})
 }
 
 type StatusPerWeek struct {
-	Date     time.Time `spanner:"Date"`
-	Finished int64     `spanner:"Finished"`
-	Skipped  int64     `spanner:"Skipped"`
+	Date             time.Time `spanner:"Date"`
+	Total            int64     `spanner:"Total"`
+	Finished         int64
+	Skipped          int64 `spanner:"Skipped"`
+	WithFailedSteps  int64 `spanner:"WithFailedSteps"`
+	WithSkippedSteps int64 `spanner:"WithSkippedSteps"`
 }
 
 func (repo *StatsRepository) SessionStatusPerWeek(ctx context.Context) (
 	[]*StatusPerWeek, error) {
-	return readEntities[StatusPerWeek](ctx, repo.client.Single(), spanner.Statement{
-		SQL: `SELECT
-  TIMESTAMP_TRUNC(Sessions.FinishedAt, WEEK) as Date,
-  COUNTIF(Sessions.SkipReason IS NULL) as Finished,
-  COUNTIF(Sessions.SkipReason IS NOT NULL) as Skipped
-FROM Series
-JOIN Sessions ON Sessions.ID = Series.LatestSessionID
-WHERE FinishedAt IS NOT NULL
+	rows, err := readEntities[StatusPerWeek](ctx, repo.client.Single(), spanner.Statement{
+		SQL: `WITH SessionTestAggregates AS (
+  SELECT
+    SessionID,
+    COUNTIF(Result = 'error') > 0 AS HasFailedSteps,
+    COUNTIF(Result = 'skipped') > 0 AS HasSkippedSteps
+  FROM SessionTests
+  GROUP BY SessionID
+)
+SELECT
+  TIMESTAMP_TRUNC(Sessions.FinishedAt, WEEK) AS Date,
+  COUNT(Sessions.ID) AS Total,
+  COUNTIF(Sessions.SkipReason IS NOT NULL) AS Skipped,
+  COUNTIF(sta.HasFailedSteps) AS WithFailedSteps,
+  COUNTIF(sta.HasSkippedSteps AND NOT sta.HasFailedSteps) AS WithSkippedSteps
+FROM Sessions
+LEFT JOIN
+  SessionTestAggregates AS sta ON Sessions.ID = sta.SessionID
+WHERE Sessions.FinishedAt IS NOT NULL
 GROUP BY Date
 ORDER BY Date`,
 	})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		row.Finished = row.Total - row.Skipped - row.WithFailedSteps - row.WithSkippedSteps
+	}
+	return rows, err
 }
 
 type DelayPerWeek struct {

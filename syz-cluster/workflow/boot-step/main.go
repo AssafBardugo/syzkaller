@@ -4,18 +4,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
-	"log"
-	"path/filepath"
+	"io"
+	"os"
 
+	"github.com/google/syzkaller/pkg/debugtracer"
 	"github.com/google/syzkaller/pkg/instance"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/report"
 	"github.com/google/syzkaller/syz-cluster/pkg/api"
 	"github.com/google/syzkaller/syz-cluster/pkg/app"
+	"github.com/google/syzkaller/syz-cluster/pkg/fuzzconfig"
 )
 
 var (
@@ -50,10 +53,16 @@ func main() {
 		app.Fatalf("failed to upload test result: %v", err)
 	}
 
-	bootedFine, err := runTest(ctx, client)
+	output := new(bytes.Buffer)
+	tracer := &debugtracer.GenericTracer{
+		WithTime:    true,
+		TraceWriter: io.MultiWriter(os.Stderr, output),
+	}
+	bootedFine, err := runTest(ctx, client, tracer)
 	if err != nil {
 		app.Fatalf("failed to run the boot test: %v", err)
 	}
+	testResult.Log = output.Bytes()
 	if bootedFine {
 		testResult.Result = api.TestPassed
 	} else {
@@ -79,8 +88,8 @@ const retryCount = 3
 // The base config may have more VMs, but we don't need that many.
 const vmCount = 3
 
-func runTest(ctx context.Context, client *api.Client) (bool, error) {
-	cfg, err := mgrconfig.LoadFile(filepath.Join("/configs", *flagConfig, "base.cfg"))
+func runTest(ctx context.Context, client *api.Client, tracer debugtracer.DebugTracer) (bool, error) {
+	cfg, err := fuzzconfig.GenerateBase(&api.FuzzConfig{})
 	if err != nil {
 		return false, err
 	}
@@ -88,10 +97,13 @@ func runTest(ctx context.Context, client *api.Client) (bool, error) {
 		return false, err
 	}
 	cfg.Workdir = "/tmp/test-workdir"
+	if err := mgrconfig.Complete(cfg); err != nil {
+		return false, fmt.Errorf("failed to complete the config: %w", err)
+	}
 
 	var rep *report.Report
 	for i := 0; i < retryCount; i++ {
-		log.Printf("starting attempt #%d", i)
+		tracer.Log("starting attempt #%d", i)
 		var err error
 		rep, err = instance.RunSmokeTest(cfg)
 		if err != nil {
@@ -99,10 +111,10 @@ func runTest(ctx context.Context, client *api.Client) (bool, error) {
 		} else if rep == nil {
 			return true, nil
 		}
-		log.Printf("attempt failed: %q", rep.Title)
+		tracer.Log("attempt failed: %q", rep.Title)
 	}
 	if *flagFindings {
-		log.Printf("reporting the finding")
+		tracer.Log("reporting the finding")
 		findingErr := client.UploadFinding(ctx, &api.NewFinding{
 			SessionID: *flagSession,
 			TestName:  *flagTestName,
@@ -113,6 +125,9 @@ func runTest(ctx context.Context, client *api.Client) (bool, error) {
 		if findingErr != nil {
 			return false, fmt.Errorf("failed to report the finding: %w", findingErr)
 		}
+	} else {
+		tracer.Log("report:\n%s", rep.Report)
+		tracer.Log("output:\n%s", rep.Output)
 	}
 	return false, nil
 }

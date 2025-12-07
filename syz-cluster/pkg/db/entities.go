@@ -102,6 +102,13 @@ func (s *Session) Status() SessionStatus {
 	return SessionStatusFinished
 }
 
+func (s *Session) Duration() time.Duration {
+	if s.FinishedAt.IsNull() {
+		return 0
+	}
+	return s.FinishedAt.Time.Sub(s.StartedAt.Time).Truncate(time.Minute)
+}
+
 func (s *Session) SetStartedAt(t time.Time) {
 	s.StartedAt = spanner.NullTime{Time: t, Valid: true}
 }
@@ -126,15 +133,20 @@ type SessionTest struct {
 }
 
 type Finding struct {
-	ID              string `spanner:"ID"`
-	SessionID       string `spanner:"SessionID"`
-	TestName        string `spanner:"TestName"`
-	Title           string `spanner:"Title"`
-	ReportURI       string `spanner:"ReportURI"`
-	LogURI          string `spanner:"LogURI"`
-	SyzReproURI     string `spanner:"SyzReproURI"`
-	SyzReproOptsURI string `spanner:"SyzReproOptsURI"`
-	CReproURI       string `spanner:"CReproURI"`
+	ID              string           `spanner:"ID"`
+	SessionID       string           `spanner:"SessionID"`
+	TestName        string           `spanner:"TestName"`
+	Title           string           `spanner:"Title"`
+	ReportURI       string           `spanner:"ReportURI"`
+	LogURI          string           `spanner:"LogURI"`
+	SyzReproURI     string           `spanner:"SyzReproURI"`
+	SyzReproOptsURI string           `spanner:"SyzReproOptsURI"`
+	CReproURI       string           `spanner:"CReproURI"`
+	InvalidatedAt   spanner.NullTime `spanner:"InvalidatedAt"`
+}
+
+func (f *Finding) SetInvalidatedAt(t time.Time) {
+	f.InvalidatedAt = spanner.NullTime{Time: t, Valid: true}
 }
 
 type SessionReport struct {
@@ -153,4 +165,13 @@ type ReportReply struct {
 	MessageID string    `spanner:"MessageID"`
 	ReportID  string    `spanner:"ReportID"`
 	Time      time.Time `spanner:"Time"`
+}
+
+// BaseFinding collects all crashes observed on the base kernel tree.
+// It will be used to avoid unnecessary bug reproduction attempts.
+type BaseFinding struct {
+	CommitHash string `spanner:"CommitHash"`
+	Config     string `spanner:"Config"`
+	Arch       string `spanner:"Arch"`
+	Title      string `spanner:"Title"`
 }

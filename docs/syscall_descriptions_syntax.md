@@ -103,9 +103,13 @@ Call attributes are:
 "breaks_returns": ignore return values of all subsequent calls in the program in fallback feedback (can't be trusted).
 "no_generate": do not try to generate this syscall, i.e. use only seed descriptions to produce it.
 "no_minimize": do not modify instances of this syscall when trying to minimize a crashing program.
+"no_squash": do not attempt to pass squashed arguments to this syscall.
+	Without that, the fuzzer will sometimes attempt to replace complex structures with arrays of bytes,
+	possibly triggering interesting mutations, but also making programs hard to reason about.
 "fsck": the content of the compressed buffer argument for this syscall is a file system and the
     string argument is a fsck-like command that will be called to verify the filesystem
 "remote_cover": wait longer to collect remote coverage for this call.
+"kfuzz_test": the call is a kfuzztest target
 ```
 
 ## Ints
@@ -187,7 +191,7 @@ foo {
 Structs can have attributes specified in square brackets after the struct.
 Attributes are:
 
-- `packed`: the struct does not have paddings between fields and has alignment 1; this is similar to GNU C `__attribute__((packed))`; struct alignment can be overriden with `align` attribute
+- `packed`: the struct does not have paddings between fields and has alignment 1; this is similar to GNU C `__attribute__((packed))`; struct alignment can be overridden with `align` attribute
 - `align[N]`: the struct has alignment N and padded up to multiple of `N`; contents of the padding are unspecified (though, frequently are zeros); similar to GNU C `__attribute__((aligned(N)))`
 - `size[N]`: the struct is padded up to the specified size `N`; contents of the padding are unspecified (though, frequently are zeros)
 

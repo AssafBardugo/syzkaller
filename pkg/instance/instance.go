@@ -6,6 +6,7 @@
 package instance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,8 +40,8 @@ type Env interface {
 type env struct {
 	cfg           *mgrconfig.Config
 	optionalFlags bool
-	buildSem      *Semaphore
-	testSem       *Semaphore
+	buildSem      *osutil.Semaphore
+	testSem       *osutil.Semaphore
 }
 
 type BuildKernelConfig struct {
@@ -55,7 +56,7 @@ type BuildKernelConfig struct {
 	BuildCPUs    int
 }
 
-func NewEnv(cfg *mgrconfig.Config, buildSem, testSem *Semaphore) (Env, error) {
+func NewEnv(cfg *mgrconfig.Config, buildSem, testSem *osutil.Semaphore) (Env, error) {
 	if !vm.AllowsOvercommit(cfg.Type) {
 		return nil, fmt.Errorf("test instances are not supported for %v VMs", cfg.Type)
 	}
@@ -314,7 +315,7 @@ type EnvTestResult struct {
 }
 
 func (inst *inst) test() EnvTestResult {
-	vmInst, err := inst.vmPool.Create(inst.vmIndex)
+	vmInst, err := inst.vmPool.Create(context.Background(), inst.vmIndex)
 	if err != nil {
 		testErr := &TestError{
 			Boot:  true,
@@ -483,7 +484,7 @@ func ExecprogCmd(execprog, executor, OS, arch, vmType string, opts csource.Optio
 	if optionalFlags {
 		optionalArg += " " + tool.OptionalFlags([]tool.Flag{
 			{Name: "slowdown", Value: fmt.Sprint(slowdown)},
-			{Name: "sandboxArg", Value: fmt.Sprint(opts.SandboxArg)},
+			{Name: "sandbox_arg", Value: fmt.Sprint(opts.SandboxArg)},
 			{Name: "type", Value: fmt.Sprint(vmType)},
 		})
 	}
@@ -505,40 +506,6 @@ var MakeBin = func() string {
 func RunnerCmd(prog, fwdAddr, os, arch string, poolIdx, vmIdx int, threaded, newEnv bool) string {
 	return fmt.Sprintf("%s -addr=%s -os=%s -arch=%s -pool=%d -vm=%d "+
 		"-threaded=%t -new-env=%t", prog, fwdAddr, os, arch, poolIdx, vmIdx, threaded, newEnv)
-}
-
-type Semaphore struct {
-	ch chan struct{}
-}
-
-func NewSemaphore(count int) *Semaphore {
-	s := &Semaphore{
-		ch: make(chan struct{}, count),
-	}
-	for i := 0; i < count; i++ {
-		s.Signal()
-	}
-	return s
-}
-
-func (s *Semaphore) Wait() {
-	<-s.ch
-}
-
-func (s *Semaphore) WaitC() <-chan struct{} {
-	return s.ch
-}
-
-func (s *Semaphore) Available() int {
-	return len(s.ch)
-}
-
-func (s *Semaphore) Signal() {
-	if av := s.Available(); av == cap(s.ch) {
-		// Not super reliable, but let it be here just in case.
-		panic(fmt.Sprintf("semaphore capacity (%d) is exceeded (%d)", cap(s.ch), av))
-	}
-	s.ch <- struct{}{}
 }
 
 // RunSmokeTest executes syz-manager in the smoke test mode and returns two values:
@@ -564,6 +531,12 @@ func RunSmokeTest(cfg *mgrconfig.Config) (*report.Report, error) {
 	reportData, err := os.ReadFile(filepath.Join(cfg.Workdir, "report.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
+			var verboseErr *osutil.VerboseError
+			if errors.As(retErr, &verboseErr) {
+				// Include more details into the report.
+				prefix := fmt.Sprintf("%s, exit code %d\n\n", verboseErr, verboseErr.ExitCode)
+				output = append([]byte(prefix), output...)
+			}
 			rep := &report.Report{
 				Title:  "SYZFATAL: image testing failed w/o kernel bug",
 				Output: output,

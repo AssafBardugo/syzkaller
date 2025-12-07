@@ -38,27 +38,30 @@ func TestGenerate(t *testing.T) {
 	t.Parallel()
 	checked := make(map[string]bool)
 	for _, target := range prog.AllTargets() {
+		// Auto-generated descriptions currently do not properly mark arch-specific syscalls, see
+		// https://github.com/google/syzkaller/issues/5410#issuecomment-3570190241.
+		// Until it's fixed, let's remove these syscalls from csource tests.
+		ct := target.NoAutoChoiceTable()
 		sysTarget := targets.Get(target.OS, target.Arch)
 		if runtime.GOOS != sysTarget.BuildOS {
 			continue
 		}
 		t.Run(target.OS+"/"+target.Arch, func(t *testing.T) {
-			full := !checked[target.OS]
-			if !full && testing.Short() {
-				return
-			}
 			if err := sysTarget.BrokenCompiler; err != "" {
 				t.Skipf("target compiler is broken: %v", err)
 			}
-			checked[target.OS] = true
-			t.Parallel()
-			testTarget(t, target, full)
-			testPseudoSyscalls(t, target)
+			full := !checked[target.OS]
+			if full || !testing.Short() {
+				checked[target.OS] = true
+				t.Parallel()
+				testTarget(t, target, full, ct)
+			}
+			testPseudoSyscalls(t, target, ct)
 		})
 	}
 }
 
-func testPseudoSyscalls(t *testing.T, target *prog.Target) {
+func testPseudoSyscalls(t *testing.T, target *prog.Target, ct *prog.ChoiceTable) {
 	// Use options that are as minimal as possible.
 	// We want to ensure that the code can always be compiled.
 	opts := Options{
@@ -66,7 +69,7 @@ func testPseudoSyscalls(t *testing.T, target *prog.Target) {
 	}
 	rs := testutil.RandSource(t)
 	for _, meta := range target.PseudoSyscalls() {
-		p := target.GenSampleProg(meta, rs)
+		p := target.GenSampleProg(meta, rs, ct)
 		t.Run(fmt.Sprintf("single_%s", meta.CallName), func(t *testing.T) {
 			t.Parallel()
 			testOne(t, p, opts)
@@ -74,9 +77,9 @@ func testPseudoSyscalls(t *testing.T, target *prog.Target) {
 	}
 }
 
-func testTarget(t *testing.T, target *prog.Target, full bool) {
+func testTarget(t *testing.T, target *prog.Target, full bool, ct *prog.ChoiceTable) {
 	rs := testutil.RandSource(t)
-	p := target.Generate(rs, 10, target.DefaultChoiceTable())
+	p := target.Generate(rs, 10, ct)
 	// Turns out that fully minimized program can trigger new interesting warnings,
 	// e.g. about NULL arguments for functions that require non-NULL arguments in syz_ functions.
 	// We could append both AllSyzProg as-is and a minimized version of it,
@@ -140,6 +143,11 @@ func testOne(t *testing.T, p *prog.Prog, opts Options) {
 		}
 		t.Logf("opts: %+v\nprogram:\n%s", opts, p.Serialize())
 		t.Fatalf("%v", err)
+	}
+	// Executor headers are embedded into the C source. Make sure there are no leftover include guards.
+	if matches := regexp.MustCompile(`(?m)^#define\s+\S+_H\s*\n`).FindAllString(string(src), -1); len(matches) > 0 {
+		t.Fatalf("source contains leftover include guards: %v\nopts: %+v\nprogram:\n%s",
+			matches, opts, p.Serialize())
 	}
 	bin, err := Build(p.Target, src)
 	if err != nil {
