@@ -1,0 +1,149 @@
+# Known call semantic changes that may cause false-positive diffs in syz-verifier
+# Rules are matched against string representations of the call lines
+# Errnos are compared as STRINGS containing NUMERIC errno values only
+
+rules:
+  - call:
+    one_of:
+      - epoll_pwait
+    change_version: "6.15.0"
+    old_errno: "22"
+    new_errno: "9"
+    match:
+      args:
+        epfd:
+          equals: "0xffffffffffffffff"
+        events:
+          equals: "0x0"   # NULL
+        maxevents:
+          any: true
+        timeout:
+          any: true
+        sigmask:
+          any: true
+        sigsetsize:
+          any: true
+
+  - call:
+    one_of:
+      - ioctl$FS_IOC_FSSETXATTR
+    change_version: "6.17.0"
+    old_errno: "95"
+    new_errno: "25"
+    match:
+      args:
+        fd:
+          not_equals: "0xffffffffffffffff"
+        cmd:
+          equals: "0x40086602"  # FS_IOC_FSSETXATTR
+        fsxattr:
+          endswith: "={0x17e}"
+
+  - call:
+    one_of:
+      - move_mount
+    change_version: "6.17.0"
+    old_errno: "14"
+    new_errno: "2"
+    match:
+      args:
+        from_dirfd:
+          positive_fd: true
+        from_pathname:
+          equals: "0x0"
+        to_dirfd:
+          positive_fd: true
+        to_pathname:
+          any: true
+        flags:
+          any: true
+
+  - call:
+    one_of:
+      - openat
+    change_version: "6.12.0"
+    old_errno: "0"
+    new_errno: "2"
+    match:
+      args:
+        dirfd:
+          positive_fd: true
+        pathname:
+          endswith: "./cgroup.cpu/cpuset.cpus\\x00"
+        flags:
+          any: true
+        mode:
+          any: true
+
+  - call:
+    one_of:
+      - syz_mount_image$ext4
+    change_version: "6.3.0"
+    old_errno: "22"
+    new_errno: "0"
+    match:
+      args:
+        any: true
+
+  - call:
+    one_of:
+      - "setxattr(\\$.*)?"
+      - "lsetxattr(\\$.*)?"
+      - "fsetxattr(\\$.*)?"
+      - "setxattrat(\\$.*)?"
+    change_version: "6.17.0"
+    old_errno:
+      one_of:
+        - "2"
+        - "9"
+    new_errno: "14"
+    match:
+      args:
+        any: true
+
+  - call:
+    one_of:
+      - syz_mount_image$iso9660
+    change_version: "6.10.0"
+    old_errno: "22"
+    new_errno: "16"
+    match:
+      args:
+        any: true
+    comes_after:    # TODO: implement in code
+      call:
+        one_of:
+          - syz_mount_image$ext4
+          - syz_mount_image$xfs
+          - syz_mount_image$btrfs
+          - syz_mount_image$f2fs
+          - syz_mount_image$reiserfs
+          - syz_mount_image$jfs
+          - syz_mount_image$nilfs2
+          - syz_mount_image$gfs2
+          - syz_mount_image$ocfs2
+      errno:
+        not_equals: "0"
+      match:
+        args:
+          any: true
+
+  - call:
+    one_of:
+      - ptrace$ARCH_SHSTK_DISABLE
+      - ptrace$ARCH_SHSTK_ENABLE
+      - ptrace$ARCH_SHSTK_UNLOCK
+      # possibly more. future CET ptrace ops will appear as ptrace$ARCH_*
+    change_version: "6.6.0"
+    old_errno: "22"
+    new_errno: "3"
+    match:
+      args:
+        request:
+          equals: "0x1e"
+        target_pid:
+          equals: "r.*"     # non-self task (retval pid: r0, r1, etc.)
+        features:
+          any: true
+        data:
+          any: true         # CET sub-op

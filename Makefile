@@ -225,7 +225,7 @@ kfuzztest:
 	@echo "Skipping kfuzztest build (it's Linux-only)"
 endif
 
-verifier: descriptions
+verifier: all
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-verifier github.com/google/syzkaller/syz-verifier
 
 # `extract` extracts const files from various kernel sources, and may only

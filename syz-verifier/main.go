@@ -6,9 +6,12 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer"
@@ -27,6 +30,60 @@ import (
 const (
 	maxResultReports = 100
 )
+
+func detectKernelVersion(kernelObj string) (string, error) {
+	if kernelObj == "" {
+		return "", fmt.Errorf("kernel obj path is empty")
+	}
+	if version := parseMakefileVersion(kernelObj); version != "" {
+		return version, nil
+	}
+	return "", fmt.Errorf("kernel version not found in %s", filepath.Join(kernelObj, "Makefile"))
+}
+
+func parseMakefileVersion(kernelObj string) string {
+	f, err := os.Open(filepath.Join(kernelObj, "Makefile"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	parts := map[string]string{}
+	allowed := map[string]struct{}{
+		"VERSION":    {},
+		"PATCHLEVEL": {},
+		"SUBLEVEL":   {},
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		kv := strings.SplitN(line, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(kv[0])
+		val := strings.TrimSpace(kv[1])
+		if _, ok := allowed[key]; ok {
+			parts[key] = val
+		}
+		if len(parts) == len(allowed) {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ""
+	}
+	version, okVersion := parts["VERSION"]
+	patch, okPatch := parts["PATCHLEVEL"]
+	sub, okSub := parts["SUBLEVEL"]
+	if !okVersion || !okPatch || !okSub {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s.%s", version, patch, sub)
+}
 
 // poolInfo contains kernel-specific information for spawning virtual machines
 // and reporting crashes. It also keeps track of the Runners executing on
@@ -49,6 +106,12 @@ func Setup(name string, cfg *mgrconfig.Config, debug bool) (*Kernel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reporter for %q: %w", name, err)
 	}
+
+	kernel.version, err = detectKernelVersion(cfg.KernelObj)
+	if err != nil {
+		log.Logf(0, "failed to detect kernel version for %s: %v", name, err)
+	}
+	kernel.verParsed, kernel.verOK = parseKernelVersionString(kernel.version)
 
 	// Enforce deterministic execution for verifier
 	cfg.Experimental.ResetAccState = true // executor process restarts between program executions to clear accumulated kernel/VM stat.
@@ -92,7 +155,11 @@ func main() {
 			log.Fatalf("failed to setup kcfg context for %s: %v", kcfg.Name, err)
 		}
 
-		log.Logf(0, "loaded kernel %s", kcfg.Name)
+		if kernels[idx].version != "" {
+			log.Logf(0, "loaded kernel %s (version %s)", kcfg.Name, kernels[idx].version)
+		} else {
+			log.Logf(0, "loaded kernel %s", kcfg.Name)
+		}
 	}
 
 	log.Logf(0, "loaded %d kernel configurations", len(kernels))

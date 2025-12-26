@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"net"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +60,8 @@ type Verifier struct {
 	// Statistics and monitoring
 	servStats    rpcserver.Stats
 	firstConnect atomic.Int64 // unix time, or 0 if not connected
+	progCtr      atomic.Uint64
+	callCtr      atomic.Uint64
 
 	// Synchronization
 	mu sync.Mutex
@@ -84,14 +85,17 @@ type Verifier struct {
 
 // Kernel represents a single kernel configuration in the verification process.
 type Kernel struct {
-	id       int
-	name     string
-	ctx      context.Context
-	debug    bool
-	cfg      *mgrconfig.Config
-	reporter *report.Reporter
-	fresh    bool
-	phase    int
+	id        int
+	name      string
+	version   string
+	verParsed kernelVersion
+	verOK     bool
+	ctx       context.Context
+	debug     bool
+	cfg       *mgrconfig.Config
+	reporter  *report.Reporter
+	fresh     bool
+	phase     int
 
 	serv      rpcserver.Server
 	servStats rpcserver.Stats
@@ -275,6 +279,7 @@ func (vrf *Verifier) maxSignalLoop(ctx context.Context) {
 		}
 	}
 }
+
 func (vrf *Verifier) fuzzingLoop(ctx context.Context) {
 	log.Logf(0, "starting fuzzing loop")
 	select {
@@ -405,7 +410,9 @@ func (vrf *Verifier) fuzzingLoop(ctx context.Context) {
 		// Distribute the same program to all kernel queues for comparison
 		var wg sync.WaitGroup
 		wg.Add(len(vrf.sources))
-		responses := make([]*queue.Result, len(vrf.sources))
+		responses := make(map[int]*queue.Result, len(vrf.sources))
+		// Map writes must be serialized; Go maps panic on concurrent writes even to different keys.
+		var resMu sync.Mutex
 		log.Logf(3, "distributing program: %s to %d kernels", req.Prog.String(), len(vrf.sources))
 		for kernelID, source := range vrf.sources {
 			log.Logf(3, "distributing program to kernel %d: %s", kernelID, req.Prog.String())
@@ -437,14 +444,29 @@ func (vrf *Verifier) fuzzingLoop(ctx context.Context) {
 
 			reqCopy.OnDone(func(r *queue.Request, res *queue.Result) bool {
 				log.Logf(3, "got result for kernel:%d %s: %+v with info: %+v", kernelID, reqCopy.Prog.String(), res, res.Info)
+				resMu.Lock()
 				responses[kernelID] = res
+				resMu.Unlock()
 				wg.Done()
 				return true
 			})
 			source.Submit(reqCopy)
 		}
 		log.Logf(2, "distributed program to %d kernels", len(vrf.sources))
-		wg.Wait()
+		waitCh := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitCh)
+		}()
+		select {
+		case <-waitCh:
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+			// Avoid blocking forever if a kernel never replies.
+			log.Logf(0, "timeout waiting for kernel responses, skipping comparison")
+			continue
+		}
 		log.Logf(3, "all %d kernels finished execution", len(vrf.sources))
 		log.Logf(3, "comparing results for %d kernels", len(vrf.sources))
 
@@ -465,95 +487,7 @@ func (vrf *Verifier) fuzzingLoop(ctx context.Context) {
 			req.Done(feedbackResult)
 		}
 
-		// Compare errno results across kernels - only report true errno mismatches
-		for i := 1; i < len(responses); i++ {
-			res := responses[i]
-			if res == nil || responses[0] == nil {
-				continue
-			}
-
-			// Check if any syscall has different errno
-			// Only compare calls that were actually executed (not skipped/failed)
-			hasMismatch := false
-			mismatchCalls := []int{}
-			for callIdx := 0; callIdx < len(responses[0].Info.Calls) && callIdx < len(res.Info.Calls); callIdx++ {
-				call0 := responses[0].Info.Calls[callIdx]
-				call1 := res.Info.Calls[callIdx]
-
-				// Only report if errno differs between successfully executed calls
-				if call0.Error != call1.Error {
-					hasMismatch = true
-					mismatchCalls = append(mismatchCalls, callIdx)
-				}
-			}
-
-			if hasMismatch {
-				log.Logf(0, "")
-				log.Logf(0, "========== ERRNO MISMATCH DETECTED ==========")
-				log.Logf(0, "Between: Kernel 0 (%s) and Kernel %d (%s)",
-					vrf.kernels[0].cfg.Name, i, vrf.kernels[i].cfg.Name)
-				log.Logf(0, "")
-				log.Logf(0, "Complete Program Sequence:")
-				log.Logf(0, "-------------------------------------------")
-
-				// Serialize the entire program once to get properly formatted calls
-				progLines := strings.Split(strings.TrimSpace(string(req.Prog.Serialize())), "\n")
-
-				// Print full program with detailed call information
-				for callIdx, call := range req.Prog.Calls {
-					isMismatch := false
-					for _, mc := range mismatchCalls {
-						if mc == callIdx {
-							isMismatch = true
-							break
-						}
-					}
-
-					prefix := "   "
-					if isMismatch {
-						prefix = ">>>"
-					}
-
-					// Print syscall with arguments from the serialized program
-					callStr := ""
-					if callIdx < len(progLines) {
-						callStr = progLines[callIdx]
-					} else {
-						callStr = call.Meta.CallName + "(...)"
-					}
-					log.Logf(0, "%s [%d] %s", prefix, callIdx, callStr)
-
-					// Print execution results
-					if callIdx < len(responses[0].Info.Calls) && callIdx < len(res.Info.Calls) {
-						call0 := responses[0].Info.Calls[callIdx]
-						call1 := res.Info.Calls[callIdx]
-
-						if isMismatch {
-							log.Logf(0, "%s     ┌─ %s: errno=%d, flags=0x%x",
-								prefix, vrf.kernels[0].cfg.Name, call0.Error, uint8(call0.Flags))
-							log.Logf(0, "%s     └─ %s: errno=%d, flags=0x%x",
-								prefix, vrf.kernels[i].cfg.Name, call1.Error, uint8(call1.Flags))
-						} else {
-							log.Logf(0, "%s     Result: errno=%d, flags=0x%x",
-								prefix, call0.Error, uint8(call0.Flags))
-						}
-					}
-					log.Logf(0, "")
-				}
-
-				log.Logf(0, "-------------------------------------------")
-				log.Logf(0, "Kernel Outputs:")
-				log.Logf(0, "  %s: %q", vrf.kernels[0].cfg.Name, responses[0].Output)
-				log.Logf(0, "  %s: %q", vrf.kernels[i].cfg.Name, res.Output)
-				if responses[0].Err != nil || res.Err != nil {
-					log.Logf(0, "Execution Errors:")
-					log.Logf(0, "  %s: %v", vrf.kernels[0].cfg.Name, responses[0].Err)
-					log.Logf(0, "  %s: %v", vrf.kernels[i].cfg.Name, res.Err)
-				}
-				log.Logf(0, "=============================================")
-				log.Logf(0, "")
-			}
-		}
+		vrf.handleErrnoMismatches(req, responses)
 	}
 }
 
@@ -616,7 +550,12 @@ func (kernel *Kernel) MachineChecked(features flatrpc.Feature,
 		log.Logf(0, "no syscalls enabled for kernel %s", kernel.cfg.Name)
 		return nil, nil
 	}
-	log.Logf(0, "kernel %s: sending enabled syscalls: %v", kernel.cfg.Name, enabledSyscalls)
+
+	// 'enabledSyscalls' is a massive vector of hex values that adds no useful information
+	// in normal operation and heavily clutters the logs. 
+	// It should only be printed when explicitly debugging.
+	//log.Logf(0, "kernel %s: sending enabled syscalls: %v", kernel.cfg.Name, enabledSyscalls)
+	log.Logf(0, "kernel %s: sending enabled syscalls", kernel.cfg.Name)
 	kernel.enabledSyscalls <- enabledSyscalls
 
 	log.Logf(0, "kernel %s: sending features: %v", kernel.cfg.Name, features)
