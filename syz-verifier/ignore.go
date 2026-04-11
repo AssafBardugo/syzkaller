@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed ignore_list.yaml
+//go:embed manual_ignore_list.yaml
 var ignoreListYAML []byte
 
 var (
